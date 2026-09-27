@@ -1,0 +1,1 @@
+print("Local Document Q&A Assistant is starting.")
