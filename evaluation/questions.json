@@ -1,0 +1,31 @@
+{
+  "description": "Retrieval evaluation set. Each answerable question lists where the answer really is: paper, acceptable page(s), and a short evidence string copied from the extracted text of that page. run_eval.py re-checks every evidence string against the ingested text before scoring.",
+  "papers": ["1706.03762", "1810.04805", "2005.11401"],
+  "questions": [
+    {"id": "T1", "question": "How many parallel attention heads does the Transformer employ?", "expected": [{"arxiv_id": "1706.03762", "pages": [5], "evidence": "h = 8 parallel attention layers"}]},
+    {"id": "T2", "question": "What BLEU score does the Transformer reach on WMT 2014 English-to-German translation?", "expected": [{"arxiv_id": "1706.03762", "pages": [1, 8], "evidence": "28.4"}]},
+    {"id": "T3", "question": "What kind of GPUs were the Transformer models trained on?", "expected": [{"arxiv_id": "1706.03762", "pages": [2, 7, 8], "evidence": "P100"}]},
+    {"id": "T4", "question": "How many warmup steps does the learning rate schedule use?", "expected": [{"arxiv_id": "1706.03762", "pages": [7], "evidence": "warmup_steps = 4000"}]},
+    {"id": "T5", "question": "What value of label smoothing was employed during training?", "expected": [{"arxiv_id": "1706.03762", "pages": [8], "evidence": "label smoothing of value"}]},
+    {"id": "T6", "question": "Which functions are used for the positional encodings?", "expected": [{"arxiv_id": "1706.03762", "pages": [6], "evidence": "sine and cosine functions"}]},
+    {"id": "T7", "question": "What beam size was used in beam search?", "expected": [{"arxiv_id": "1706.03762", "pages": [8], "evidence": "beam size of 4"}]},
+    {"id": "B1", "question": "What percentage of WordPiece tokens does BERT mask at random?", "expected": [{"arxiv_id": "1810.04805", "pages": [4], "evidence": "we mask 15% of all WordPiece tokens"}]},
+    {"id": "B2", "question": "How often is a chosen token replaced with the [MASK] token?", "expected": [{"arxiv_id": "1810.04805", "pages": [4, 12], "evidence": "80% of the time"}]},
+    {"id": "B3", "question": "Which corpora were used to pre-train BERT?", "expected": [{"arxiv_id": "1810.04805", "pages": [5, 14], "evidence": "BooksCorpus"}]},
+    {"id": "B4", "question": "How many total parameters does BERT BASE have?", "expected": [{"arxiv_id": "1810.04805", "pages": [3, 8], "evidence": "110M"}]},
+    {"id": "B5", "question": "How large is BERT's WordPiece vocabulary?", "expected": [{"arxiv_id": "1810.04805", "pages": [4], "evidence": "30,000 token vocabulary"}]},
+    {"id": "B6", "question": "How are sentence pairs labeled for next sentence prediction?", "expected": [{"arxiv_id": "1810.04805", "pages": [4, 13], "evidence": "IsNext"}]},
+    {"id": "R1", "question": "Which pre-trained generator does RAG use, and how many parameters does it have?", "expected": [{"arxiv_id": "2005.11401", "pages": [3], "evidence": "400M parameters"}]},
+    {"id": "R2", "question": "How many documents are in RAG's Wikipedia index?", "expected": [{"arxiv_id": "2005.11401", "pages": [4], "evidence": "21M documents"}]},
+    {"id": "R3", "question": "Which library is used to build the MIPS index for fast retrieval?", "expected": [{"arxiv_id": "2005.11401", "pages": [4], "evidence": "FAISS"}]},
+    {"id": "R4", "question": "What architecture does the DPR retriever follow?", "expected": [{"arxiv_id": "2005.11401", "pages": [3], "evidence": "bi-encoder architecture"}]},
+    {"id": "R5", "question": "Which Wikipedia dump is the non-parametric knowledge source?", "expected": [{"arxiv_id": "2005.11401", "pages": [4], "evidence": "December 2018 dump"}]},
+    {"id": "R6", "question": "How does RAG-Sequence use retrieved documents to predict target tokens?", "expected": [{"arxiv_id": "2005.11401", "pages": [2, 3], "evidence": "same document to predict each target token"}]},
+    {"id": "U1", "question": "What is the capital of France?", "expected": []},
+    {"id": "U2", "question": "How do you bake a chocolate cake?", "expected": []},
+    {"id": "U3", "question": "Which reward model was used for RLHF fine-tuning?", "expected": []},
+    {"id": "U4", "question": "How many GPUs were used to train GPT-4?", "expected": []},
+    {"id": "U5", "question": "What accuracy does BERT achieve on ImageNet image classification?", "expected": []},
+    {"id": "U6", "question": "Which quantum error correction code do the authors propose?", "expected": []}
+  ]
+}
