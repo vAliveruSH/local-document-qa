@@ -35,6 +35,7 @@ free tools (Python 3.11, SQLite, pypdf, FastAPI) and needs no paid API, account,
 16. [Troubleshooting](#16-troubleshooting)
 17. [Project structure](#17-project-structure)
 18. [Project history](#18-project-history)
+19. [Public read-only demo](#19-public-read-only-demo)
 
 ---
 
@@ -53,7 +54,7 @@ free tools (Python 3.11, SQLite, pypdf, FastAPI) and needs no paid API, account,
 | **Optional local answer generation** | With [Ollama](https://ollama.com), a local model can write an answer. The answer is accepted only if every citation refers to a passage that was actually retrieved. |
 | **Local web interface** | Discover, Collection and Ask screens with live ingestion progress, filters, removal, dark/light themes, and a phone layout. Served only to your own computer. |
 | **Background ingestion** | Papers are downloaded and indexed one at a time in the background with real download progress; ingestion interrupted by closing the app is marked for retry on restart. |
-| **Tested and evaluated** | 139 automated tests, including 10 browser end-to-end tests of every screen (no network access required), and a 25-question retrieval evaluation with published results, including failures. |
+| **Tested and evaluated** | 205 automated tests, including 14 browser end-to-end tests of every screen and the read-only demo (no network access required), and a 25-question retrieval evaluation with published results, including failures. |
 
 ---
 
@@ -128,7 +129,7 @@ python -m playwright install chromium   # one-time: test browser for the UI test
 python -m pytest -q
 ```
 
-Expected output: `139 passed`. Without the test browser, the 10 browser tests are skipped.
+Expected output: `205 passed`. Without the test browser, the 14 browser tests are skipped.
 
 ---
 
@@ -566,7 +567,7 @@ python -m pytest -q                            # compact output
 python -m pytest tests/test_ui_e2e.py -v       # browser end-to-end tests only
 ```
 
-The suite contains **139 tests** and requires no network access. HTTP calls are replaced by fakes,
+The suite contains **205 tests** and requires no network access. HTTP calls are replaced by fakes,
 and test PDFs are generated in memory. arXiv parsing is tested against real arXiv responses saved
 in `tests/fixtures/`. The API and browser tests run the real server, database, and background
 worker; only arXiv and the answer model are stand-ins. The browser tests fail on any JavaScript error.
@@ -580,7 +581,10 @@ worker; only arXiv and the answer model are stand-ins. The browser tests fail on
 | `test_retrieval.py` | Ranking, stemming, citation labels and links, insufficient evidence, search-syntax injection, per-paper filtering, index persistence |
 | `test_answer.py` | Output-mode labelling, citation validation, rejection of invalid citations, model refusal, fallback when the model is unavailable, Ollama client errors |
 | `test_server.py` | Every API endpoint: status, search (including arXiv failure and invalid input), add, background ingestion, abstract-only fallback, retry, remove, restart recovery, and all three ask modes |
-| `test_ui_e2e.py` | Browser tests (Playwright): empty states; search → select → add → live statuses; search error and retry; no results; filters; retry full text; ask about this paper; remove dialog; download progress; passages-only, not-enough and grounded answers with citation links; theme persistence; phone layout |
+| `test_ui_e2e.py` | Browser tests (Playwright): empty states; search → select → add → live statuses; search error and retry; no results; filters; retry full text; ask about this paper; remove dialog; download progress; passages-only, not-enough and grounded answers with citation links; theme persistence; phone layout; the read-only demo in a real browser, including write routes called directly from the page |
+| `test_demo.py` | The public demo: only four routes exist, every forbidden route fails when called directly, no network/model/worker is created, the database cannot be written, licences and attribution, input limits, rate limiting, security headers, refusal to serve an unlicensed or mismatched corpus |
+| `test_build_demo_corpus.py` | The corpus build script stops unless each exact version's arXiv page shows an accepted licence |
+| `test_deploy_config.py` | `pyproject.toml`, `vercel.json` and `.python-version` point Vercel at the demo, never the full app |
 
 ---
 
@@ -685,6 +689,7 @@ local-document-qa/
 │   ├── workflow.py
 │   ├── worker.py             # Background ingestion thread
 │   ├── server.py             # FastAPI server (JSON API + web page)
+│   ├── demo.py               # Public read-only demo (separate app, 4 routes)
 │   ├── web/                  # index.html, styles.css, app.js
 │   ├── cli.py
 │   └── config.py
@@ -697,11 +702,22 @@ local-document-qa/
 │   ├── pdf_maker.py          # Generates test PDFs in memory
 │   ├── conftest.py           # Shared fakes and fixtures
 │   └── test_*.py
+├── demo/                     # Public demo corpus (CC BY 4.0 papers)
+│   ├── library.db            # Passages and search index, read-only
+│   ├── corpus.json           # Licence and attribution, checked by the demo
+│   └── README.md             # Papers, authors, versions, licence, changes
+├── scripts/
+│   └── build_demo_corpus.py  # Builds demo/ from openly licensed papers
 ├── docs/
 │   ├── design.md             # Design document (original plan + revisions)
+│   ├── deploy.md             # Public read-only demo: papers, licences, deployment
 │   └── screenshots/          # Screenshots of the web interface
+├── .github/workflows/tests.yml  # Test suite on Linux, Python 3.11 and 3.12
 ├── requirements.txt          # Runtime dependencies
 ├── requirements-dev.txt      # Runtime + test dependencies
+├── pyproject.toml            # Vercel entry point for the demo only
+├── vercel.json               # Vercel function settings for the demo
+├── .python-version           # Python version used by Vercel
 ├── pytest.ini
 └── .gitignore                # Excludes .venv/, data/, caches, editor settings
 ```
@@ -716,3 +732,27 @@ that the primary goal and added full-text ingestion, page-level provenance, and 
 answering. Revision 3 added the local web interface (Discover, Collection, Ask) over the same
 engine, in place of the planned dashboard. The design history is recorded in
 [`docs/design.md`](docs/design.md).
+
+---
+
+## 19. Public read-only demo
+
+`docqa/demo.py` is a separate, read-only app meant for sharing with friends through a link. It
+answers questions about a small, fixed set of **CC BY 4.0** arXiv papers, with the licence and
+attribution shown on every paper and passage. It has only four routes:
+
+- `GET /api/status`
+- `GET /api/papers`
+- `GET /api/papers/{id}`
+- `POST /api/ask`
+
+It has no arXiv search, no add, ingest or remove, and no answer model. The bundled database is
+opened read-only, and the app never contacts the network. The full app described above is not
+changed and is never exposed.
+
+Status: code and tests are done, and the demo corpus is included in the project's
+[`demo/`](demo/) folder. The demo has not been deployed. [`demo/README.md`](demo/README.md)
+lists the four papers, their authors, arXiv versions, licence, and the changes made to the text.
+[`docs/deploy.md`](docs/deploy.md) covers the papers and their licences, how to build the corpus
+(`python scripts/build_demo_corpus.py`), how to deploy on Vercel's free Hobby plan, and the checks
+for the live link.

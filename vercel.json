@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "docqa/demo.py": {
+      "maxDuration": 30,
+      "includeFiles": "{demo/**,docqa/web/**}",
+      "excludeFiles": "{tests/**,data/**,evaluation/**,docs/**,.github/**,.venv/**}"
+    }
+  }
+}

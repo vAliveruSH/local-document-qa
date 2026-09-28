@@ -289,6 +289,13 @@ textarea.input { resize: vertical; min-height: 88px; line-height: 1.5; }
 .passage .matched { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px; }
 .passage .open { display: inline-flex; gap: 6px; align-items: center; margin-top: 10px; font-family: var(--mono); font-size: 13px; }
 
+/* ---- public demo ------------------------------------------------------------------------------ */
+
+.demo-banner { margin: 0 0 22px; padding: 10px 14px; border-radius: var(--radius-sm); background: var(--yellow-soft); color: var(--text); font-size: 14px; }
+.demo-banner strong { color: var(--yellow-text); }
+.license-line { display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; color: var(--muted); font-size: 12.5px; }
+.license-line .icon { width: 14px; height: 14px; margin-top: 2px; }
+
 /* ---- toasts and dialog ---------------------------------------------------------------------- */
 
 .toasts { position: fixed; right: 20px; bottom: 20px; display: grid; gap: 10px; z-index: 60; max-width: min(420px, calc(100vw - 32px)); }

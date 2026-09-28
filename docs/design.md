@@ -83,3 +83,20 @@ the data flow above: **Discover** (steps 1–3), **Collection** (steps 3–5, wi
 - Closing the app mid-ingestion leaves no paper stuck "in progress" (it becomes *failed: interrupted*).
 - A search failure never changes the collection, and the page says so.
 - The interface works at phone width without sideways scrolling.
+
+## Revision 4 (2026-09-28): public read-only demo
+
+Friends should be able to try the app through a link without anyone exposing a laptop, a writable
+shared library, or a model endpoint to the internet.
+
+### What changed
+| Before | Revision 4 | Why |
+|---|---|---|
+| The app ran only on your own computer | A separate demo app (`docqa/demo.py`) that can be hosted for free | Friends can try asking questions without installing anything. |
+| Any arXiv paper could be ingested | The demo bundles only papers whose exact version is licensed CC BY 4.0 (or CC0), with attribution | Most arXiv papers may not be republished; these may, with credit. |
+| One read-write database | The demo opens a bundled database read-only; it refuses writes | Hosting platforms have read-only filesystems, and visitors must not change the library. |
+
+### Success checks (in addition to the earlier ones)
+- Only the four demo routes exist; search, add, ingest, remove and model generation fail when called directly, not just when their buttons are hidden.
+- The demo refuses to serve a corpus whose papers, versions or licences don't match its manifest.
+- A friend on another network can open the link and get cited passages.

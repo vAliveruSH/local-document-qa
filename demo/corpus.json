@@ -1,0 +1,65 @@
+{
+  "about": "Papers bundled in the public read-only demo. Each exact version is licensed as listed; the licence is shown on that version's arXiv page (source).",
+  "changes": "Text extracted from the PDF and split into passages; figures, tables and equations are omitted or altered; author email addresses removed.",
+  "papers": [
+    {
+      "arxiv_id": "2310.11511",
+      "version": "v1",
+      "title": "Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection",
+      "authors": [
+        "Akari Asai",
+        "Zeqiu Wu",
+        "Yizhong Wang",
+        "Avirup Sil",
+        "Hannaneh Hajishirzi"
+      ],
+      "source": "https://arxiv.org/abs/2310.11511v1",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/"
+    },
+    {
+      "arxiv_id": "2109.11085",
+      "version": "v1",
+      "title": "Towards Universal Dense Retrieval for Open-domain Question Answering",
+      "authors": [
+        "Christopher Sciavolino"
+      ],
+      "source": "https://arxiv.org/abs/2109.11085v1",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/"
+    },
+    {
+      "arxiv_id": "2408.08444",
+      "version": "v2",
+      "title": "W-RAG: Weakly Supervised Dense Retrieval in RAG for Open-domain Question Answering",
+      "authors": [
+        "Jinming Nian",
+        "Zhiyuan Peng",
+        "Qifan Wang",
+        "Yi Fang"
+      ],
+      "source": "https://arxiv.org/abs/2408.08444v2",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/"
+    },
+    {
+      "arxiv_id": "2501.15915",
+      "version": "v1",
+      "title": "Parametric Retrieval Augmented Generation",
+      "authors": [
+        "Weihang Su",
+        "Yichen Tang",
+        "Qingyao Ai",
+        "Junxi Yan",
+        "Changyue Wang",
+        "Hongning Wang",
+        "Ziyi Ye",
+        "Yujia Zhou",
+        "Yiqun Liu"
+      ],
+      "source": "https://arxiv.org/abs/2501.15915v1",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/"
+    }
+  ]
+}

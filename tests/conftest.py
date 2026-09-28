@@ -81,4 +81,51 @@ def collection(tmp_path):
     lib.close()
 
 
+DEMO_LICENSE_URL = "https://creativecommons.org/licenses/by/4.0/"
+DEMO_PAPERS = [("2401.00001", "Widgets"), ("2401.00002", "Gardens")]
+
+
+def build_demo_folder(folder: Path, secret_pdf_path: str = "C:/Users/someone/secret/pdfs/x.pdf") -> Path:
+    """A small synthetic demo corpus: bundled library.db + corpus.json, made read-only like a deployment."""
+    import json
+    import os
+    import stat
+
+    from docqa.demo import bundle_database
+
+    folder.mkdir(parents=True, exist_ok=True)
+    source = folder.parent / f"{folder.name}-source.db"
+    with Library(source) as lib:
+        papers = [paper(i, t) for i, t in DEMO_PAPERS] + [paper("2401.00009", "Cached search result")]
+        lib.save_papers(papers)
+        lib.add_to_collection([i for i, _ in DEMO_PAPERS])
+        lib.record_ingest("2401.00001", FULL_TEXT, "2 pages", chunk_pages("2401.00001", [
+            "Widgets are small mechanical parts used in clocks.",
+            "The optimal gear ratio for widget transmissions is three to one, measured on twelve prototypes.",
+        ]), "v1", secret_pdf_path, 2)
+        lib.record_ingest("2401.00002", FULL_TEXT, "1 page", chunk_pages("2401.00002", [
+            "Tomato plants in gardens need six hours of sunlight and regular watering.",
+        ]), "v1", secret_pdf_path, 1)
+        lib.set_meta("last_arxiv_search_at", "2026-01-01")
+    bundle_database(source, folder / "library.db")
+    source.unlink()
+    manifest = {"papers": [{"arxiv_id": i, "version": "v1", "license_url": DEMO_LICENSE_URL} for i, _ in DEMO_PAPERS]}
+    (folder / "corpus.json").write_text(json.dumps(manifest), encoding="utf-8")
+    for f in folder.iterdir():
+        os.chmod(f, stat.S_IREAD)
+    if os.name == "posix":
+        os.chmod(folder, stat.S_IREAD | stat.S_IEXEC)  # read-only folder, as on a deployed bundle
+    return folder
+
+
+def unlock_folder(folder: Path) -> None:
+    import os
+    import stat
+
+    if os.name == "posix":
+        os.chmod(folder, stat.S_IRWXU)
+    for f in folder.iterdir():
+        os.chmod(f, stat.S_IREAD | stat.S_IWRITE)
+
+
 __all__ = ["FakeResponse", "FakeSession", "fixture_bytes", "make_client", "requests"]

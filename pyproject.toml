@@ -1,0 +1,8 @@
+# Used only by the Vercel hosting platform for the public read-only demo.
+# The local app does not read this file (tests are configured in pytest.ini,
+# dependencies are listed in requirements.txt).
+#
+# Without this setting Vercel would auto-detect app.py at the project root, which is the
+# command-line launcher (it has no `app` object). This points Vercel at the demo instead.
+[tool.vercel]
+entrypoint = "docqa.demo:app"

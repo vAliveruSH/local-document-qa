@@ -116,6 +116,11 @@ async function api(path, { method = "GET", body } = {}) {
  * ------------------------------------------------------------------------------------- */
 
 const IN_PROGRESS = ["queued", "downloading", "processing"];
+
+// The public demo (docqa/demo.py) reports mode "demo": read-only, no search, no model.
+function isDemo() {
+  return state.status?.mode === "demo";
+}
 const INDEXED = ["full_text", "abstract_only"];
 
 const state = {
@@ -163,12 +168,18 @@ function renderStatus() {
     setService("service-model", "error", "Local server not reachable");
     return;
   }
-  const arxivClass = { ok: "ok", error: "error" }[s.arxiv.state] || "warn";
-  const arxivText = { ok: "Connected · last search OK", error: "Last request failed" }[s.arxiv.state] || "Ready · not contacted yet";
-  setService("service-arxiv", arxivClass, arxivText, s.arxiv.message);
+  if (isDemo()) {
+    setService("service-arxiv", "", "Turned off in the public demo", s.arxiv.message);
+    setService("service-model", "", "Not available in the public demo", s.model.detail);
+    $$('[data-view="discover"]').forEach((a) => { a.hidden = true; });
+  } else {
+    const arxivClass = { ok: "ok", error: "error" }[s.arxiv.state] || "warn";
+    const arxivText = { ok: "Connected · last search OK", error: "Last request failed" }[s.arxiv.state] || "Ready · not contacted yet";
+    setService("service-arxiv", arxivClass, arxivText, s.arxiv.message);
+    if (s.model.available) setService("service-model", "ok", s.model.name, s.model.detail);
+    else setService("service-model", "", "Not installed — passages only", s.model.detail);
+  }
   setService("service-index", "ok", `${s.index.engine} · ${plural(s.index.chunks, "chunk")}`);
-  if (s.model.available) setService("service-model", "ok", s.model.name, s.model.detail);
-  else setService("service-model", "", "Not installed — passages only", s.model.detail);
 
   const setBadge = (name, value) => {
     const badge = $(`[data-badge="${name}"]`);
@@ -299,8 +310,9 @@ function confirmDialog({ title, bodyHtml, confirmLabel, danger = true }) {
 const VIEWS = { discover: mountDiscover, collection: mountCollection, ask: mountAsk };
 
 function route() {
-  const [path, query] = (location.hash.replace(/^#\/?/, "") || "discover").split("?");
-  const view = VIEWS[path] ? path : "discover";
+  const home = isDemo() ? "ask" : "discover";
+  const [path, query] = (location.hash.replace(/^#\/?/, "") || home).split("?");
+  const view = VIEWS[path] ? path : home;
   const params = new URLSearchParams(query || "");
   state.view = view;
   $$("[data-view]").forEach((a) => {
@@ -309,9 +321,45 @@ function route() {
   });
   const titles = { discover: "Discover papers", collection: "Collection", ask: "Ask your collection" };
   document.title = `${titles[view]} · Local Document Q&A`;
-  VIEWS[view](params);
+  if (isDemo() && view === "discover") mountDemoDiscover();
+  else VIEWS[view](params);
+  if (isDemo()) $("#main").prepend(demoBanner());
   $("#main").focus({ preventScroll: true });
   window.scrollTo(0, 0);
+}
+
+function demoBanner() {
+  const s = state.status;
+  const el = document.createElement("div");
+  el.className = "demo-banner";
+  el.setAttribute("role", "note");
+  el.innerHTML = s.demo.available
+    ? `<strong>Public demo</strong> · read-only · ${plural(s.stats.papers, "openly licensed paper")} · passages only.
+       <a href="${esc(s.demo.repo_url)}" target="_blank" rel="noopener">Run the full app on your computer</a> to search arXiv and build your own library.`
+    : `<strong>Public demo unavailable:</strong> ${esc(s.demo.problem)}`;
+  return el;
+}
+
+function mountDemoDiscover() {
+  $("#main").innerHTML = `
+    <p class="eyebrow">Step 1 · Find papers</p>
+    <h1>Discover papers</h1>
+    <div class="card state-card">
+      <h2>Searching arXiv is turned off in this public demo</h2>
+      <p>The demo only answers questions about a small, fixed set of openly licensed papers, and nobody can add
+        or remove papers here. To search arXiv and build your own private library, run the full app on your computer.</p>
+      <div class="actions">
+        <a class="btn btn-primary" href="#/ask">Ask the demo papers</a>
+        <a class="btn" href="#/collection">See the demo papers</a>
+        <a class="btn" href="${esc(state.status.demo.repo_url)}" target="_blank" rel="noopener">How to run it yourself${icon("external")}</a>
+      </div>
+    </div>`;
+}
+
+function licenseLine(license) {
+  if (!license) return "";
+  return `<div class="license-line">${icon("file")}<span>Licensed <a href="${esc(license.url)}" target="_blank" rel="noopener">${esc(license.name)}</a>
+    (<a href="${esc(license.evidence)}" target="_blank" rel="noopener">source</a>). ${esc(license.changes)}</span></div>`;
 }
 
 function go(view, params) {
@@ -770,7 +818,8 @@ function collectionCard(p) {
           <div class="byline">${esc(authorLine(p.authors))} · ${esc(formatDate(p.published))}</div>
           <div class="meta-row">${arxivLink(p)}
             ${p.primary_category ? `<span class="chip">${esc(p.primary_category)}</span>` : ""}
-            <span>Saved ${esc(timeAgo(p.first_saved_at))}</span></div>
+            ${isDemo() ? "" : `<span>Saved ${esc(timeAgo(p.first_saved_at))}</span>`}</div>
+          ${licenseLine(p.license)}
         </div>
         <div class="status-box">
           ${statusPill(p)}
@@ -779,9 +828,9 @@ function collectionCard(p) {
         </div>
       </div>
       <div class="col-actions">
-        ${actions}
+        ${isDemo() ? `<button type="button" class="btn btn-sm" data-action="ask">${icon("chat")}Ask about this paper</button>` : actions}
         <a class="btn btn-ghost btn-sm" href="${esc(p.abs_url)}" target="_blank" rel="noopener">View source on arXiv${icon("external")}</a>
-        <button type="button" class="btn btn-ghost danger btn-sm push" data-action="remove" ${busy ? 'disabled title="Wait until ingestion finishes"' : ""}>${icon("trash")}Remove</button>
+        ${isDemo() ? "" : `<button type="button" class="btn btn-ghost danger btn-sm push" data-action="remove" ${busy ? 'disabled title="Wait until ingestion finishes"' : ""}>${icon("trash")}Remove</button>`}
       </div>
     </article>`;
 }
@@ -879,7 +928,7 @@ function renderAskBody() {
   root.innerHTML = `
     <form class="card" id="ask-form">
       <label class="field-label" for="question">Your question</label>
-      <textarea class="input" id="question" maxlength="1000" rows="3" placeholder="e.g. How does RAG combine retrieval with generation?">${esc(a.question)}</textarea>
+      <textarea class="input" id="question" maxlength="${isDemo() ? state.status.demo.limits.max_question_chars : 1000}" rows="3" placeholder="e.g. How does RAG combine retrieval with generation?">${esc(a.question)}</textarea>
       <div class="ask-row">
         <label class="visually-hidden" for="paper-scope">Papers to search</label>
         <select class="input" id="paper-scope">
@@ -888,10 +937,12 @@ function renderAskBody() {
             Only: ${esc(p.title.length > 70 ? p.title.slice(0, 68) + "…" : p.title)}${p.status === "abstract_only" ? " (abstract only)" : ""}</option>`).join("")}
         </select>
         <div class="hint">
-          ${model && model.available
-            ? `<label class="toggle"><input type="checkbox" id="generate-toggle" ${a.generate ? "checked" : ""}>
-                 Write an answer with ${esc(model.name)}</label>`
-            : `No answer model installed: you’ll see retrieved passages.`}
+          ${isDemo()
+            ? `Public demo: you’ll see passages quoted from the papers; no answer model runs here.`
+            : model && model.available
+              ? `<label class="toggle"><input type="checkbox" id="generate-toggle" ${a.generate ? "checked" : ""}>
+                   Write an answer with ${esc(model.name)}</label>`
+              : `No answer model installed: you’ll see retrieved passages.`}
           <div>Press Ctrl + Enter to ask.</div>
         </div>
         <button class="btn btn-primary" type="submit" id="ask-button">Ask</button>
@@ -941,7 +992,10 @@ async function submitQuestion() {
     a.result = await api("/api/ask", {
       method: "POST",
       // Without a model we still ask for generation, so the server explains why no answer was written.
-      body: { question: a.question, paper_id: a.paperId || null, generate: model?.available ? a.generate : true },
+      // The public demo accepts no "generate" field at all (it never runs a model).
+      body: isDemo()
+        ? { question: a.question, paper_id: a.paperId || null }
+        : { question: a.question, paper_id: a.paperId || null, generate: model?.available ? a.generate : true },
     });
     a.tab = a.result.mode === "generated" ? "cited" : "all";
     const recent = storageGet("docqa-recent-questions", []).filter((q) => q !== a.question);
@@ -1034,7 +1088,9 @@ function answerPanel(r) {
     <h3 style="font:600 15px/1.3 var(--sans);margin:18px 0 4px">What you can do</h3>
     <ul class="todo-list">
       <li>Add papers that cover this topic.
-        ${r.keywords.length ? `<button type="button" class="link-button" data-action="search-arxiv">Search arXiv for “${esc(r.keywords.join(" "))}”</button>` : ""}</li>
+        ${isDemo()
+          ? `This demo has a fixed set of papers; <a href="${esc(state.status.demo.repo_url)}" target="_blank" rel="noopener">run the full app</a> to add your own.`
+          : r.keywords.length ? `<button type="button" class="link-button" data-action="search-arxiv">Search arXiv for “${esc(r.keywords.join(" "))}”</button>` : ""}</li>
       <li>Rephrase using the terms your papers use. Search matches keywords, not synonyms.</li>
     </ul>
     ${r.keywords.length ? keywordBlock(r) : ""}`;
@@ -1086,6 +1142,7 @@ function passageCard(p, showCited) {
       <div class="matched"><span class="section-label">Matched</span>${p.matched_keywords.map((k) => `<span class="chip mono">${esc(k)}</span>`).join("")}</div>
       <a class="open" href="${esc(p.link)}" target="_blank" rel="noopener">${p.page != null ? `Open PDF at page ${p.page}` : "Open abstract page"}${icon("external")}
         <span class="visually-hidden">(opens in a new tab)</span></a>
+      ${licenseLine(p.license)}
     </article>`;
 }
 
@@ -1133,9 +1190,11 @@ function init() {
   $$("[data-theme-choice]").forEach((b) => b.addEventListener("click", () => setTheme(b.dataset.themeChoice)));
   $("#mobile-theme").addEventListener("click", () => setTheme(currentTheme() === "dark" ? "light" : "dark"));
   renderThemeControls();
-  window.addEventListener("hashchange", route);
-  route();
-  refreshStatus();
+  // Load the status first: it tells the page whether it is the full app or the read-only public demo.
+  refreshStatus().then(() => {
+    window.addEventListener("hashchange", route);
+    route();
+  });
   setInterval(refreshStatus, 15000);
 }
 

@@ -342,3 +342,102 @@ def test_phone_layout_uses_bottom_navigation(browser, app_server):
     context.close()
     assert no_sideways_scroll
     assert errors == []
+
+
+# ---- public read-only demo (docqa/demo.py) ------------------------------------------------------
+
+@pytest.fixture
+def demo_server(tmp_path):
+    import uvicorn
+
+    from conftest import build_demo_folder, unlock_folder
+    from docqa.demo import create_demo_app
+
+    folder = build_demo_folder(tmp_path / "demo")
+    app = create_demo_app(demo_folder=folder, repo_url="https://example.org/repo")
+    port = free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(100):
+        if server.started:
+            break
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}"
+    server.should_exit = True
+    thread.join(timeout=5)
+    unlock_folder(folder)
+
+
+@pytest.fixture
+def demo_page(browser, demo_server):
+    context = browser.new_context(viewport={"width": 1345, "height": 900})
+    pg = context.new_page()
+    errors = []
+    pg.on("pageerror", lambda exc: errors.append(str(exc)))
+    pg.on("console", lambda msg: errors.append(msg.text)
+          if msg.type == "error" and not msg.text.startswith("Failed to load resource") else None)
+    pg.goto(demo_server)
+    yield pg
+    context.close()
+    assert errors == [], f"JavaScript errors in the page: {errors}"
+
+
+def test_demo_opens_on_ask_with_banner_and_no_search(demo_page):
+    expect(demo_page.locator("h1")).to_have_text("Ask your collection")
+    expect(demo_page.locator(".demo-banner")).to_contain_text("Public demo")
+    expect(demo_page.locator(".demo-banner")).to_contain_text("2 openly licensed papers")
+    expect(demo_page.locator("nav.nav [data-view='discover']")).to_be_hidden()
+    expect(demo_page.locator("#service-arxiv .service-detail")).to_have_text("Turned off in the public demo")
+    expect(demo_page.locator("#service-model .service-detail")).to_have_text("Not available in the public demo")
+    expect(demo_page.locator("#generate-toggle")).to_have_count(0)
+    demo_page.goto(demo_page.url.split("#")[0] + "#/discover")
+    expect(demo_page.get_by_text("Searching arXiv is turned off in this public demo")).to_be_visible()
+    expect(demo_page.locator("#search-input")).to_have_count(0)
+
+
+def test_demo_collection_is_read_only_with_licences(demo_page):
+    demo_page.click("nav.nav >> text=Collection")
+    expect(demo_page.locator(".col-card")).to_have_count(2)
+    expect(demo_page.locator(".col-card .license-line").first).to_contain_text("CC BY 4.0")
+    for label in ("Remove", "Retry", "Download", "Index v"):
+        expect(demo_page.locator(".col-card button", has_text=label)).to_have_count(0)
+    demo_page.locator(".col-card", has_text="Widgets").get_by_text("Ask about this paper").click()
+    expect(demo_page.locator("#paper-scope")).to_have_value("2401.00001")
+
+
+def test_demo_ask_shows_licensed_passages(demo_page):
+    demo_page.fill("#question", "What gear ratio is optimal for widget transmissions?")
+    demo_page.keyboard.press("Control+Enter")
+    expect(demo_page.get_by_text("Retrieved passages only")).to_be_visible()
+    expect(demo_page.get_by_text("Public demo: no answer model runs here")).to_be_visible()
+    expect(demo_page.locator(".passage .license-line").first).to_contain_text("CC BY 4.0")
+    demo_page.fill("#question", "What is the capital of France?")
+    demo_page.keyboard.press("Control+Enter")
+    expect(demo_page.get_by_text("Not enough information in your collection")).to_be_visible()
+    expect(demo_page.get_by_role("link", name="run the full app", exact=True)).to_be_visible()
+    expect(demo_page.locator("[data-action='search-arxiv']")).to_have_count(0)
+
+
+def test_demo_write_routes_fail_even_when_called_from_the_page(demo_page):
+    # Bypass the interface entirely: call the local app's write endpoints straight from the browser.
+    statuses = demo_page.evaluate("""async () => {
+        const calls = [
+            ["POST", "/api/collection", {ids: ["2401.00001"]}],
+            ["POST", "/api/papers/2401.00001/ingest", {force: true}],
+            ["DELETE", "/api/papers/2401.00001", null],
+            ["GET", "/api/search?q=attention", null],
+            ["POST", "/api/ask", {question: "gear ratio", generate: true}],
+        ];
+        const out = [];
+        for (const [method, url, body] of calls) {
+            const r = await fetch(url, {method, headers: {"Content-Type": "application/json"},
+                                        body: body ? JSON.stringify(body) : undefined});
+            out.push(r.status);
+        }
+        return out;
+    }""")
+    assert statuses[:4] == [405, 405, 405, 404]
+    assert statuses[4] == 422  # "generate" is rejected, not silently ignored
+    demo_page.click("nav.nav >> text=Collection")
+    expect(demo_page.locator(".col-card")).to_have_count(2)

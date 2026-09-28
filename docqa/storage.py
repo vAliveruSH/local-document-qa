@@ -119,6 +119,27 @@ class Library:
         self.conn.executescript(SCHEMA)
         self._migrate()
 
+    @classmethod
+    def open_read_only(cls, db_path: Path | str) -> "Library":
+        """Open an existing library file for reading only (used by the public demo).
+
+        Unlike Library(), this never creates tables, changes the journal mode, or migrates, so
+        it works on a read-only disk. Three layers stop any write: SQLite's read-only +
+        immutable URI flags, PRAGMA query_only, and an authorizer that refuses write statements.
+        """
+        path = Path(db_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"No library file at {path.name}")
+        conn = sqlite3.connect(
+            f"{path.resolve().as_uri()}?mode=ro&immutable=1", uri=True, check_same_thread=False
+        )
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only = ON")
+        conn.set_authorizer(_deny_writes)
+        library = cls.__new__(cls)  # skip __init__, which writes (schema, WAL, migrations)
+        library.conn = conn
+        return library
+
     def _migrate(self) -> None:
         """Add columns introduced after the first release, so older library files keep working."""
         columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(papers)")}
@@ -323,6 +344,28 @@ class Library:
     def get_meta(self, key: str) -> str | None:
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else None
+
+
+_WRITE_ACTIONS = {
+    sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE,
+    sqlite3.SQLITE_CREATE_TABLE, sqlite3.SQLITE_CREATE_TEMP_TABLE, sqlite3.SQLITE_CREATE_INDEX,
+    sqlite3.SQLITE_CREATE_TEMP_INDEX, sqlite3.SQLITE_CREATE_TRIGGER, sqlite3.SQLITE_CREATE_TEMP_TRIGGER,
+    sqlite3.SQLITE_CREATE_VIEW, sqlite3.SQLITE_CREATE_TEMP_VIEW, sqlite3.SQLITE_CREATE_VTABLE,
+    sqlite3.SQLITE_DROP_TABLE, sqlite3.SQLITE_DROP_TEMP_TABLE, sqlite3.SQLITE_DROP_INDEX,
+    sqlite3.SQLITE_DROP_TEMP_INDEX, sqlite3.SQLITE_DROP_TRIGGER, sqlite3.SQLITE_DROP_TEMP_TRIGGER,
+    sqlite3.SQLITE_DROP_VIEW, sqlite3.SQLITE_DROP_TEMP_VIEW, sqlite3.SQLITE_DROP_VTABLE,
+    sqlite3.SQLITE_ALTER_TABLE, sqlite3.SQLITE_REINDEX, sqlite3.SQLITE_ANALYZE,
+    sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH, sqlite3.SQLITE_TRANSACTION, sqlite3.SQLITE_SAVEPOINT,
+}
+
+
+def _deny_writes(action: int, arg1, arg2, dbname, source) -> int:
+    """SQLite authorizer for read-only libraries: allow reads, refuse anything that could write."""
+    if action in _WRITE_ACTIONS:
+        return sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_PRAGMA and arg2 is not None:  # "PRAGMA name = value" changes settings
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
 
 
 def _metadata_values(paper: Paper) -> tuple:
