@@ -1,0 +1,11 @@
+# Python virtual environment and caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local data created by the app: SQLite database and downloaded PDFs
+data/
+
+# Editor settings (personal, not part of the project)
+.vscode/

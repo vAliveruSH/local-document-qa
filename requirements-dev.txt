@@ -1,0 +1,3 @@
+# Everything in requirements.txt plus the test runner (tested with pytest 9.1.1)
+-r requirements.txt
+pytest>=8,<10
