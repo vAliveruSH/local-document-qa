@@ -192,6 +192,35 @@ class Library:
             return self.conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         return self.conn.execute("SELECT COUNT(*) FROM chunks WHERE arxiv_id = ?", (arxiv_id,)).fetchone()[0]
 
+    # ---- full-text search ------------------------------------------------------
+
+    def search_chunks(self, fts_query: str, limit: int, arxiv_id: str | None = None) -> list[sqlite3.Row]:
+        """Best-matching chunks for an FTS5 query, ranked by BM25 (lower bm25() = better match)."""
+        paper_filter = "AND c.arxiv_id = ?" if arxiv_id else ""
+        params = (fts_query, arxiv_id, limit) if arxiv_id else (fts_query, limit)
+        return self.conn.execute(
+            f"""SELECT c.chunk_id, c.arxiv_id, c.page, c.source, c.text,
+                       p.title, p.version, p.abs_url, p.pdf_url, p.ingest_status,
+                       bm25(chunks_fts) AS bm25
+                FROM chunks_fts
+                JOIN chunks c ON c.chunk_id = chunks_fts.chunk_id
+                JOIN papers p ON p.arxiv_id = c.arxiv_id
+                WHERE chunks_fts MATCH ? {paper_filter}
+                ORDER BY bm25 LIMIT ?""",
+            params,
+        ).fetchall()
+
+    def chunks_containing(self, fts_query: str, chunk_ids: list[str]) -> set[str]:
+        """Which of the given chunks match an FTS5 query (used to see which question words a passage has)."""
+        if not chunk_ids:
+            return set()
+        placeholders = ", ".join("?" * len(chunk_ids))
+        rows = self.conn.execute(
+            f"SELECT chunk_id FROM chunks_fts WHERE chunks_fts MATCH ? AND chunk_id IN ({placeholders})",
+            (fts_query, *chunk_ids),
+        ).fetchall()
+        return {row["chunk_id"] for row in rows}
+
     def _exists(self, arxiv_id: str) -> bool:
         return self.conn.execute("SELECT 1 FROM papers WHERE arxiv_id = ?", (arxiv_id,)).fetchone() is not None
 
