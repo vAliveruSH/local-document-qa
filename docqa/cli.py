@@ -6,8 +6,11 @@ import sys
 import textwrap
 
 from . import config
-from .arxiv_client import ArxivClient, ArxivError
+from .answer import INSUFFICIENT_EVIDENCE, RETRIEVAL_ONLY, Answer, answer_question
+from .arxiv_client import ArxivClient, ArxivError, normalize_arxiv_id
 from .ingest import ALREADY_INGESTED
+from .local_llm import DEFAULT_MODEL, OllamaGenerator
+from .retrieval import DEFAULT_TOP_K
 from .storage import ABSTRACT_ONLY, FULL_TEXT, Library, StoredPaper
 from .workflow import FAILED, INVALID_ID, LAST_SEARCH_KEY, NOT_FOUND, add_papers, search_and_save
 
@@ -60,6 +63,14 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--force", action="store_true", help="download and re-index even if already ingested")
     add.set_defaults(handler=cmd_add)
 
+    ask = commands.add_parser("ask", help="ask a question about the papers you have ingested")
+    ask.add_argument("question")
+    ask.add_argument("--top", type=int, default=DEFAULT_TOP_K, help=f"passages to retrieve (default {DEFAULT_TOP_K})")
+    ask.add_argument("--paper", help="only search this arXiv ID")
+    ask.add_argument("--generate", action="store_true", help="also write an answer with a local Ollama model")
+    ask.add_argument("--model", default=DEFAULT_MODEL, help=f"Ollama model for --generate (default {DEFAULT_MODEL})")
+    ask.set_defaults(handler=cmd_ask)
+
     list_cmd = commands.add_parser("list", help="show the papers saved in your library")
     list_cmd.set_defaults(handler=cmd_list)
     return parser
@@ -109,6 +120,49 @@ def cmd_add(args, library: Library) -> int:
     if counts[ABSTRACT_ONLY]:
         print("Abstract-only papers can still be searched, but answers about them rely on the abstract alone.")
     return 0 if all(r.status in (FULL_TEXT, ABSTRACT_ONLY, ALREADY_INGESTED) for r in results) else 1
+
+
+def cmd_ask(args, library: Library) -> int:
+    if library.chunk_count() == 0:
+        print("Nothing is ingested yet, so there is nothing to search. Use `python app.py add <ID>` first.")
+        return 1
+    if not 1 <= args.top <= 20:
+        raise ValueError("--top must be between 1 and 20.")
+    paper = normalize_arxiv_id(args.paper) if args.paper else None
+    generator = OllamaGenerator(model=args.model) if args.generate else None
+    if generator:
+        print(f"Asking {generator.name}; this can take a minute on a CPU...\n")
+    answer = answer_question(library, args.question, generator, top_k=args.top, arxiv_id=paper)
+    print(format_answer(answer))
+    return 0
+
+
+def format_answer(answer: Answer) -> str:
+    retrieval = answer.retrieval
+    lines = [f"Question: {retrieval.question}", f"Key words searched: {', '.join(retrieval.keywords) or '(none)'}", ""]
+
+    if answer.mode == INSUFFICIENT_EVIDENCE:
+        lines.append("NOT ENOUGH EVIDENCE - no answer given.")
+        lines += [f"  {note}" for note in answer.notes]
+        if retrieval.passages:
+            lines += ["", "Closest passages (weak matches, shown only so you can see what was found):"]
+    elif answer.mode == RETRIEVAL_ONLY:
+        lines.append("RETRIEVAL-ONLY RESULT - no answer was generated. These are the most relevant passages")
+        lines.append("from your library; read them to find the answer.")
+        lines += [f"  Note: {note}" for note in answer.notes]
+    else:
+        lines.append(f"GENERATED ANSWER (written by {answer.generator_name} from the passages below;")
+        lines.append("citations were checked to exist, but verify the claims against the passages):")
+        lines += ["", textwrap.fill(answer.text, WIDTH)]
+        lines += ["", "Cited: " + "; ".join(f"[{p.rank}] {p.citation}" for p in answer.cited)]
+        lines += ["", "Retrieved passages:"]
+
+    for passage in retrieval.passages:
+        lines += ["", f"[{passage.rank}] {passage.title}"]
+        lines.append(f"    {passage.citation}   score {passage.score:.2f}   matched: {', '.join(passage.matched_keywords)}")
+        lines.append(f"    {passage.link}")
+        lines.append(textwrap.indent(textwrap.fill(passage.text, WIDTH - 4), "    "))
+    return "\n".join(lines)
 
 
 def cmd_list(args, library: Library) -> int:
