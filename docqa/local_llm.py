@@ -27,6 +27,17 @@ class OllamaGenerator:
     def name(self) -> str:
         return f"{self.model} via Ollama"
 
+    def check(self) -> tuple[bool, str]:
+        """Is Ollama running with this model installed? Returns (available, explanation). Never raises."""
+        try:
+            response = self.session.get(f"{self.host}/api/tags", timeout=1.5)
+            names = {m.get("name", "") for m in response.json().get("models", [])}
+        except (requests.RequestException, ValueError, AttributeError):
+            return False, f"Ollama was not found at {self.host}"
+        if self.model in names or f"{self.model}:latest" in names:
+            return True, f"{self.model} via Ollama"
+        return False, f"Ollama is running, but the model '{self.model}' is not installed (ollama pull {self.model})"
+
     def generate(self, prompt: str) -> str:
         try:
             response = self.session.post(

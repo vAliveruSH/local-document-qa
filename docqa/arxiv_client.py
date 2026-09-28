@@ -7,6 +7,7 @@ wait at least 3 seconds between requests and to page through results with `start
 from __future__ import annotations
 
 import re
+import threading
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ API_URL = "https://export.arxiv.org/api/query"
 USER_AGENT = "local-document-qa/0.2 (personal learning project; https://github.com/vAliveruSH/local-document-qa)"
 MIN_SECONDS_BETWEEN_REQUESTS = 3.0
 MAX_RESULTS_PER_REQUEST = 50
+MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 # 406 is included because arXiv intermittently answers valid queries with it (seen during testing).
 RETRYABLE_STATUS_CODES = {406, 429, 500, 502, 503, 504}
 
@@ -191,6 +193,8 @@ class ArxivClient:
         self._sleep = sleep
         self._clock = clock
         self._last_request_at: float | None = None
+        # One client can be shared by the web server's threads; the lock keeps the 3 s spacing global.
+        self._turn_lock = threading.Lock()
 
     def search(self, query: str, start: int = 0, max_results: int = 10, sort: str = "relevance") -> SearchPage:
         if not 1 <= max_results <= MAX_RESULTS_PER_REQUEST:
@@ -216,7 +220,32 @@ class ArxivClient:
         params = {"id_list": ",".join(arxiv_ids), "max_results": len(arxiv_ids)}
         return parse_feed(self.get(API_URL, params).content).papers
 
-    def get(self, url: str, params: dict | None = None) -> requests.Response:
+    def download(
+        self, url: str, on_progress: Callable[[int], None] | None = None, max_bytes: int = MAX_DOWNLOAD_BYTES
+    ) -> bytes:
+        """Download a file (a PDF), reporting progress as a percentage when the size is known."""
+        response = self.get(url, stream=True)
+        try:
+            total = int(response.headers.get("Content-Length") or 0)
+        except ValueError:
+            total = 0
+        received = bytearray()
+        last_reported = -1
+        try:
+            for piece in response.iter_content(64 * 1024):
+                received.extend(piece)
+                if len(received) > max_bytes:
+                    raise ArxivError(f"the file is larger than {max_bytes // (1024 * 1024)} MB")
+                if on_progress and total:
+                    percent = min(99, len(received) * 100 // total)
+                    if percent >= last_reported + 5:  # don't report every tiny step
+                        on_progress(percent)
+                        last_reported = percent
+        except requests.RequestException as exc:
+            raise ArxivError(f"the download was interrupted ({exc.__class__.__name__})") from exc
+        return bytes(received)
+
+    def get(self, url: str, params: dict | None = None, stream: bool = False) -> requests.Response:
         """GET with the polite wait, a timeout, and retries. Raises ArxivError when it gives up."""
         attempts = self.max_retries + 1
         problem = ""
@@ -225,7 +254,7 @@ class ArxivClient:
             retry_after = 0.0
             try:
                 response = self.session.get(
-                    url, params=params, timeout=self.timeout, headers={"User-Agent": USER_AGENT}
+                    url, params=params, timeout=self.timeout, headers={"User-Agent": USER_AGENT}, stream=stream
                 )
             except requests.Timeout:
                 problem = f"no response within {self.timeout:.0f} seconds"
@@ -247,11 +276,12 @@ class ArxivClient:
         )
 
     def _wait_for_turn(self) -> None:
-        if self._last_request_at is not None:
-            remaining = self.min_interval - (self._clock() - self._last_request_at)
-            if remaining > 0:
-                self._sleep(remaining)
-        self._last_request_at = self._clock()
+        with self._turn_lock:
+            if self._last_request_at is not None:
+                remaining = self.min_interval - (self._clock() - self._last_request_at)
+                if remaining > 0:
+                    self._sleep(remaining)
+            self._last_request_at = self._clock()
 
 
 def _retry_after_seconds(response: requests.Response) -> float:

@@ -5,8 +5,8 @@ import pytest
 from conftest import FakeResponse, fixture_bytes, make_client
 from docqa.arxiv_client import ArxivError, Paper
 from docqa.ingest import ALREADY_INGESTED, ingest_paper
-from docqa.storage import ABSTRACT_ONLY, FULL_TEXT
-from docqa.workflow import FAILED, INVALID_ID, NOT_FOUND, add_papers
+from docqa.storage import ABSTRACT_ONLY, FAILED, FULL_TEXT, QUEUED
+from docqa.workflow import INVALID_ID, NOT_FOUND, add_papers, queue_for_ingest, remove_paper, select_papers
 from pdf_maker import make_pdf
 
 PAPER = Paper(
@@ -26,8 +26,10 @@ class Downloader:
         self.result = result
         self.calls = 0
 
-    def __call__(self, url):
+    def __call__(self, url, on_progress=None):
         self.calls += 1
+        if on_progress:
+            on_progress(50)
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
@@ -130,3 +132,68 @@ def test_add_papers_when_arxiv_is_down(library, tmp_path):
     assert results[0].status == FAILED
     assert "could not look up metadata" in results[0].note
     assert library.list_papers() == []
+
+
+def test_unexpected_error_is_recorded_as_failed(saved, tmp_path):
+    def broken(url, on_progress=None):
+        raise OSError("disk full")
+
+    result = ingest_paper(saved, PAPER, broken, tmp_path)
+    assert result.status == FAILED
+    stored = saved.get_paper(PAPER.arxiv_id)
+    assert stored.ingest_status == FAILED and "disk full" in stored.ingest_note
+
+
+def test_download_progress_is_stored_while_downloading(saved, tmp_path):
+    seen = []
+
+    def fetch(url, on_progress):
+        on_progress(40)
+        seen.append(saved.get_paper(PAPER.arxiv_id))
+        return make_pdf([PAGE_1])
+
+    ingest_paper(saved, PAPER, fetch, tmp_path)
+    assert seen[0].ingest_status == "downloading" and seen[0].progress == 40
+    assert saved.get_paper(PAPER.arxiv_id).progress is None  # cleared when finished
+
+
+def test_select_adds_to_collection_and_queue_marks_status(library, tmp_path):
+    library.save_papers([PAPER])
+    assert library.stats()["papers"] == 0  # a search result is not in the collection yet
+    client, _, _ = make_client()
+    selection = select_papers(client, library, [PAPER.arxiv_id, "bad id"])
+    queue_for_ingest(library, selection.ready)
+
+    assert selection.ready == [PAPER.arxiv_id]
+    assert selection.problems[0].status == INVALID_ID
+    stored = library.get_paper(PAPER.arxiv_id)
+    assert stored.in_collection and stored.ingest_status == QUEUED
+    assert library.stats()["in_progress"] == 1
+
+
+def test_remove_paper_deletes_metadata_chunks_and_pdfs(saved, tmp_path):
+    ingest_paper(saved, PAPER, Downloader(make_pdf([PAGE_1, PAGE_2])), tmp_path)
+    (tmp_path / "2401.00001v0.pdf").write_bytes(b"%PDF-old version")
+    (tmp_path / "2401.000011v1.pdf").write_bytes(b"%PDF-a different paper")
+    chunks = saved.chunk_count(PAPER.arxiv_id)
+
+    removal = remove_paper(saved, PAPER.arxiv_id, tmp_path)
+
+    assert removal.chunks_deleted == chunks and removal.pdfs_deleted == 2
+    assert saved.get_paper(PAPER.arxiv_id) is None
+    assert saved.chunk_count() == 0
+    assert saved.conn.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0] == 0
+    assert (tmp_path / "2401.000011v1.pdf").exists()  # other papers' files are untouched
+
+
+def test_remove_refuses_while_ingesting(saved, tmp_path):
+    queue_for_ingest(saved, [PAPER.arxiv_id])
+    with pytest.raises(ValueError, match="still being ingested"):
+        remove_paper(saved, PAPER.arxiv_id, tmp_path)
+
+
+def test_interrupted_ingestion_becomes_failed_on_restart(saved):
+    queue_for_ingest(saved, [PAPER.arxiv_id])
+    assert saved.mark_interrupted() == 1
+    stored = saved.get_paper(PAPER.arxiv_id)
+    assert stored.ingest_status == FAILED and "interrupted" in stored.ingest_note

@@ -1,3 +1,5 @@
-# Packages the app needs to run (tested with requests 2.34.2, pypdf 6.19.0 on Python 3.11)
-requests>=2.31,<3
-pypdf>=4.0,<7
+# Packages the app needs to run (tested on Python 3.11 with the versions in the comments)
+requests>=2.31,<3      # 2.34.2
+pypdf>=4.0,<7          # 6.19.0
+fastapi>=0.110,<1      # 0.141.1  (web interface)
+uvicorn>=0.29,<1       # 0.54.0   (runs the web server)

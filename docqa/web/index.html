@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Document Q&amp;A</title>
+  <meta name="description" content="Search arXiv, build a local library of papers, and ask cited questions.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233f78c0'/%3E%3Cpath d='M10 7h8l5 5v13H10z' fill='none' stroke='white' stroke-width='2'/%3E%3Ccircle cx='24' cy='25' r='4' fill='%23e3b74a'/%3E%3C/svg%3E">
+  <script>
+    // Apply the saved theme before the page paints, so it never flashes the wrong colours.
+    try {
+      const saved = localStorage.getItem("docqa-theme");
+      if (saved === "light" || saved === "dark") document.documentElement.dataset.theme = saved;
+    } catch (e) { /* storage unavailable: follow the system setting */ }
+  </script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <aside class="sidebar" aria-label="Main navigation">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true" data-icon="file"></span>
+      <div>
+        <div class="brand-name">Local Document Q&amp;A</div>
+        <div class="brand-sub">Research paper assistant</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a href="#/discover" data-view="discover"><span data-icon="search"></span>Discover</a>
+      <a href="#/collection" data-view="collection"><span data-icon="layers"></span>Collection<span class="badge" data-badge="collection" hidden></span></a>
+      <a href="#/ask" data-view="ask"><span data-icon="help"></span>Ask<span class="badge" data-badge="ask" hidden></span></a>
+    </nav>
+
+    <section class="services" aria-labelledby="services-title">
+      <h2 id="services-title">Local services</h2>
+      <div class="service" id="service-arxiv"><span class="dot"></span><div><strong>arXiv search</strong><span class="service-detail">Checking…</span></div></div>
+      <div class="service" id="service-index"><span class="dot"></span><div><strong>Paper index</strong><span class="service-detail">Checking…</span></div></div>
+      <div class="service" id="service-model"><span class="dot"></span><div><strong>Answer model</strong><span class="service-detail">Checking…</span></div></div>
+    </section>
+
+    <div class="sidebar-spacer"></div>
+
+    <div class="theme-toggle" role="group" aria-label="Colour theme">
+      <button type="button" data-theme-choice="dark"><span data-icon="moon"></span>Dark</button>
+      <button type="button" data-theme-choice="light"><span data-icon="sun"></span>Light</button>
+    </div>
+  </aside>
+
+  <header class="mobile-header">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true" data-icon="file"></span>
+      <div class="brand-name">Local Document Q&amp;A</div>
+    </div>
+    <button type="button" class="icon-button" id="mobile-theme" aria-label="Switch colour theme"><span data-icon="sun"></span></button>
+  </header>
+
+  <main id="main" tabindex="-1"></main>
+
+  <nav class="bottom-nav" aria-label="Main navigation">
+    <a href="#/discover" data-view="discover"><span data-icon="search"></span>Discover</a>
+    <a href="#/collection" data-view="collection"><span data-icon="layers"></span>Collection</a>
+    <a href="#/ask" data-view="ask"><span data-icon="help"></span>Ask</a>
+  </nav>
+
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+  <div id="modal-root"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

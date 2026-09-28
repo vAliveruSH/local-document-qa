@@ -16,9 +16,15 @@ from .arxiv_client import Paper
 from .chunking import Chunk
 
 # Ingest statuses stored for each paper.
-NOT_INGESTED = "not_ingested"
+NOT_INGESTED = "not_ingested"  # metadata only
+QUEUED = "queued"  # waiting for the background worker
+DOWNLOADING = "downloading"
+PROCESSING = "processing"  # extracting text and indexing
 FULL_TEXT = "full_text"  # PDF text was extracted and indexed
 ABSTRACT_ONLY = "abstract_only"  # only the abstract is indexed (PDF missing or unreadable)
+FAILED = "failed"  # ingestion stopped with an error; ingest_note says why
+IN_PROGRESS = (QUEUED, DOWNLOADING, PROCESSING)
+INDEXED = (FULL_TEXT, ABSTRACT_ONLY)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS papers (
@@ -43,7 +49,9 @@ CREATE TABLE IF NOT EXISTS papers (
     ingested_version TEXT NOT NULL DEFAULT '',
     pdf_path         TEXT NOT NULL DEFAULT '',
     page_count       INTEGER,
-    ingested_at      TEXT NOT NULL DEFAULT ''
+    ingested_at      TEXT NOT NULL DEFAULT '',
+    in_collection    INTEGER NOT NULL DEFAULT 0,  -- 1 once the user adds the paper; 0 = only seen in a search
+    progress         INTEGER                       -- download percentage while downloading
 );
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -89,6 +97,8 @@ class StoredPaper:
     pdf_path: str
     page_count: int | None
     ingested_at: str
+    in_collection: bool = False
+    progress: int | None = None
 
 
 def now_iso() -> str:
@@ -99,10 +109,26 @@ class Library:
     def __init__(self, db_path: Path | str):
         if str(db_path) != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(db_path)
+        # timeout: wait for another connection's write instead of failing (the web server and its
+        # background worker use separate connections to the same file).
+        self.conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
+        if str(db_path) != ":memory:":
+            self.conn.execute("PRAGMA journal_mode = WAL")  # readers don't block the writer
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the first release, so older library files keep working."""
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(papers)")}
+        with self.conn:
+            if "in_collection" not in columns:
+                self.conn.execute("ALTER TABLE papers ADD COLUMN in_collection INTEGER NOT NULL DEFAULT 0")
+                # Before this column existed, a paper was "added" exactly when it had been ingested.
+                self.conn.execute("UPDATE papers SET in_collection = 1 WHERE ingest_status != ?", (NOT_INGESTED,))
+            if "progress" not in columns:
+                self.conn.execute("ALTER TABLE papers ADD COLUMN progress INTEGER")
 
     def close(self) -> None:
         self.conn.close()
@@ -143,9 +169,70 @@ class Library:
         row = self.conn.execute("SELECT * FROM papers WHERE arxiv_id = ?", (arxiv_id,)).fetchone()
         return _row_to_stored(row) if row else None
 
-    def list_papers(self) -> list[StoredPaper]:
-        rows = self.conn.execute("SELECT * FROM papers ORDER BY first_saved_at, arxiv_id").fetchall()
+    def list_papers(self, collection_only: bool = False) -> list[StoredPaper]:
+        where = "WHERE in_collection = 1" if collection_only else ""
+        rows = self.conn.execute(f"SELECT * FROM papers {where} ORDER BY first_saved_at, arxiv_id").fetchall()
         return [_row_to_stored(row) for row in rows]
+
+    def add_to_collection(self, arxiv_ids: list[str]) -> None:
+        with self.conn:
+            self.conn.executemany("UPDATE papers SET in_collection = 1 WHERE arxiv_id = ?", [(i,) for i in arxiv_ids])
+
+    def set_state(self, arxiv_id: str, status: str, note: str = "", progress: int | None = None) -> None:
+        """Record where a paper is in ingestion (queued, downloading, processing, failed)."""
+        with self.conn:
+            self.conn.execute(
+                "UPDATE papers SET ingest_status = ?, ingest_note = ?, progress = ? WHERE arxiv_id = ?",
+                (status, note, progress, arxiv_id),
+            )
+
+    def set_progress(self, arxiv_id: str, progress: int) -> None:
+        with self.conn:
+            self.conn.execute("UPDATE papers SET progress = ? WHERE arxiv_id = ?", (progress, arxiv_id))
+
+    def mark_interrupted(self) -> int:
+        """Papers left mid-ingestion when the app stopped become 'failed' so they can be retried."""
+        placeholders = ", ".join("?" * len(IN_PROGRESS))
+        with self.conn:
+            cursor = self.conn.execute(
+                f"""UPDATE papers SET ingest_status = ?, progress = NULL,
+                    ingest_note = 'interrupted: the app stopped before ingestion finished'
+                    WHERE ingest_status IN ({placeholders})""",
+                (FAILED, *IN_PROGRESS),
+            )
+        return cursor.rowcount
+
+    def delete_paper(self, arxiv_id: str) -> int:
+        """Delete a paper, its chunks and their index entries. Returns how many chunks were removed."""
+        chunks = self.chunk_count(arxiv_id)
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM chunks_fts WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE arxiv_id = ?)",
+                (arxiv_id,),
+            )
+            self.conn.execute("DELETE FROM chunks WHERE arxiv_id = ?", (arxiv_id,))
+            self.conn.execute("DELETE FROM papers WHERE arxiv_id = ?", (arxiv_id,))
+        return chunks
+
+    def stats(self) -> dict:
+        """Counts over the user's collection (papers they added), for summaries and badges."""
+        rows = self.conn.execute(
+            "SELECT ingest_status, COUNT(*) AS n FROM papers WHERE in_collection = 1 GROUP BY ingest_status"
+        ).fetchall()
+        by_status = {row["ingest_status"]: row["n"] for row in rows}
+        return {
+            "papers": sum(by_status.values()),
+            "indexed": sum(by_status.get(s, 0) for s in INDEXED),
+            "full_text": by_status.get(FULL_TEXT, 0),
+            "abstract_only": by_status.get(ABSTRACT_ONLY, 0),
+            "in_progress": sum(by_status.get(s, 0) for s in IN_PROGRESS),
+            "failed": by_status.get(FAILED, 0),
+            "metadata_only": by_status.get(NOT_INGESTED, 0),
+            "chunks": self.chunk_count(),
+            "cached_search_results": self.conn.execute(
+                "SELECT COUNT(*) FROM papers WHERE in_collection = 0"
+            ).fetchone()[0],
+        }
 
     def record_ingest(
         self,
@@ -177,7 +264,7 @@ class Library:
             )
             self.conn.execute(
                 """UPDATE papers SET ingest_status = ?, ingest_note = ?, ingested_version = ?,
-                   pdf_path = ?, page_count = ?, ingested_at = ? WHERE arxiv_id = ?""",
+                   pdf_path = ?, page_count = ?, ingested_at = ?, progress = NULL WHERE arxiv_id = ?""",
                 (status, note, version, pdf_path, page_count, now_iso(), arxiv_id),
             )
 
@@ -273,4 +360,6 @@ def _row_to_stored(row: sqlite3.Row) -> StoredPaper:
         pdf_path=row["pdf_path"],
         page_count=row["page_count"],
         ingested_at=row["ingested_at"],
+        in_collection=bool(row["in_collection"]),
+        progress=row["progress"],
     )

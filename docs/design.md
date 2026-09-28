@@ -57,7 +57,29 @@ are kept as the original plan; this section records what changed and why.
 - Closing and reopening the app keeps papers, downloaded PDFs, and the search index.
 - A generated answer is only shown if every citation points to a retrieved passage.
 
-### Limits
+### Limits (revision 2)
 - Keyword search (BM25) can miss passages that use different words than the question.
 - Text extraction from PDFs loses tables, equations, and figure contents.
 - Citations are checked to exist, not proven to support each sentence; users should read the cited passage.
+
+---
+
+## Revision 3 (2026-09-28): local web interface
+
+The "dashboard" from the first plan is now a local web interface with three screens that follow
+the data flow above: **Discover** (steps 1–3), **Collection** (steps 3–5, with live status), and
+**Ask** (steps 6–7).
+
+### What changed
+| Before | Revision 3 | Why |
+|---|---|---|
+| Command line only | Web interface (`python app.py serve`) plus the command line | Easier to browse results, select papers, and read cited passages side by side. |
+| Every search result was saved into the library | Search results are cached; a paper joins the **collection** only when the user adds it | Browsing shouldn't clutter the collection or trigger downloads. |
+| Ingestion ran while the command waited | A background worker ingests one paper at a time and records each step (queued, downloading %, processing, failed) | The page stays responsive and shows real progress; arXiv still gets one request at a time. |
+| No way to delete | Remove a paper (metadata, passages, PDFs) after confirmation | Keeps the local library tidy. |
+
+### Success checks (in addition to the earlier ones)
+- Every screen shows only real data from the local API; nothing is simulated.
+- Closing the app mid-ingestion leaves no paper stuck "in progress" (it becomes *failed: interrupted*).
+- A search failure never changes the collection, and the page says so.
+- The interface works at phone width without sideways scrolling.

@@ -68,6 +68,7 @@ class RetrievalResult:
     passages: list[Passage]
     enough_evidence: bool
     reason: str
+    missing_keywords: tuple[str, ...] = ()  # question words found in none of the returned passages
 
 
 def extract_keywords(question: str) -> list[str]:
@@ -96,6 +97,7 @@ def retrieve(library: Library, question: str, top_k: int = DEFAULT_TOP_K, arxiv_
         return RetrievalResult(
             question, tuple(keywords), [], False,
             "No passage in your library contains any of the words: " + ", ".join(keywords) + ".",
+            tuple(keywords),
         )
 
     chunk_ids = [row["chunk_id"] for row in rows]
@@ -120,17 +122,18 @@ def retrieve(library: Library, question: str, top_k: int = DEFAULT_TOP_K, arxiv_
 
     best = max(len(p.matched_keywords) for p in passages)
     needed = keywords_needed(len(keywords))
+    missing = tuple(k for k in keywords if not any(k in p.matched_keywords for p in passages))
     if best < needed:
-        missing = [k for k in keywords if not any(k in p.matched_keywords for p in passages)]
         reason = (
             f"The best passage contains only {best} of the {len(keywords)} key words in your question "
             f"(at least {needed} needed)."
         )
         if missing:
             reason += " Not found in any top passage: " + ", ".join(missing) + "."
-        return RetrievalResult(question, tuple(keywords), passages, False, reason)
+        return RetrievalResult(question, tuple(keywords), passages, False, reason, missing)
 
     return RetrievalResult(
         question, tuple(keywords), passages, True,
         f"The best passage contains {best} of the {len(keywords)} key words in your question.",
+        missing,
     )

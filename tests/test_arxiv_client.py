@@ -194,3 +194,18 @@ def test_invalid_search_options_are_rejected(kwargs):
     with pytest.raises(ValueError):
         client.search("attention", **kwargs)
     assert session.calls == []
+
+
+def test_download_reports_progress_and_streams():
+    body = b"%PDF-" + b"x" * 300_000
+    client, session, _ = make_client(FakeResponse(200, body, headers={"Content-Length": str(len(body))}))
+    reported = []
+    assert client.download("https://arxiv.org/pdf/1", on_progress=reported.append) == body
+    assert session.calls[0]["stream"] is True
+    assert reported and reported == sorted(reported) and reported[-1] <= 99
+
+
+def test_download_rejects_files_that_are_too_large():
+    client, _, _ = make_client(FakeResponse(200, b"x" * 200_000))
+    with pytest.raises(ArxivError, match="larger than"):
+        client.download("https://arxiv.org/pdf/1", max_bytes=100_000)

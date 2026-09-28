@@ -21,6 +21,10 @@ class FakeResponse:
         self.content = content
         self.headers = headers or {}
 
+    def iter_content(self, chunk_size):
+        for start in range(0, len(self.content), chunk_size):
+            yield self.content[start : start + chunk_size]
+
 
 class FakeSession:
     """Stands in for requests.Session: returns queued responses (or raises queued exceptions)."""
@@ -29,8 +33,8 @@ class FakeSession:
         self.outcomes = list(outcomes)
         self.calls = []
 
-    def get(self, url, params=None, timeout=None, headers=None):
-        self.calls.append({"url": url, "params": params, "timeout": timeout, "headers": headers})
+    def get(self, url, params=None, timeout=None, headers=None, stream=False):
+        self.calls.append({"url": url, "params": params, "timeout": timeout, "headers": headers, "stream": stream})
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome

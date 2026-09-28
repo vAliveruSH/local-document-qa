@@ -7,8 +7,11 @@ on your own machine. You can then ask questions in plain English. The system ret
 relevant passages, each cited to a specific paper and page. When the library does not contain
 enough evidence, it says so instead of guessing.
 
-The project runs entirely on local, free tools: Python 3.11, SQLite, and pypdf. It needs no paid
-API, account, or cloud service.
+It has two interfaces over the same engine: a **web interface** that runs locally in your browser
+(`python app.py serve`) and a **command-line interface**. The project runs entirely on local,
+free tools (Python 3.11, SQLite, pypdf, FastAPI) and needs no paid API, account, or cloud service.
+
+![Ask screen showing retrieved passages with page citations](docs/screenshots/ask-passages.png)
 
 ---
 
@@ -17,19 +20,21 @@ API, account, or cloud service.
 1. [Key features](#1-key-features)
 2. [Quick start](#2-quick-start)
 3. [Installation](#3-installation)
-4. [Usage](#4-usage)
-5. [Example session](#5-example-session)
-6. [System architecture](#6-system-architecture)
-7. [Design decisions](#7-design-decisions)
-8. [Data storage](#8-data-storage)
-9. [Configuration](#9-configuration)
-10. [Optional: generated answers with a local model](#10-optional-generated-answers-with-a-local-model)
-11. [Testing](#11-testing)
-12. [Evaluation](#12-evaluation)
-13. [Limitations](#13-limitations)
-14. [Troubleshooting](#14-troubleshooting)
-15. [Project structure](#15-project-structure)
-16. [Project history](#16-project-history)
+4. [Web interface](#4-web-interface)
+5. [Command-line usage](#5-command-line-usage)
+6. [Example session](#6-example-session)
+7. [System architecture](#7-system-architecture)
+8. [HTTP API](#8-http-api)
+9. [Design decisions](#9-design-decisions)
+10. [Data storage](#10-data-storage)
+11. [Configuration](#11-configuration)
+12. [Optional: generated answers with a local model](#12-optional-generated-answers-with-a-local-model)
+13. [Testing](#13-testing)
+14. [Evaluation](#14-evaluation)
+15. [Limitations](#15-limitations)
+16. [Troubleshooting](#16-troubleshooting)
+17. [Project structure](#17-project-structure)
+18. [Project history](#18-project-history)
 
 ---
 
@@ -46,7 +51,9 @@ API, account, or cloud service.
 | **Evidence check** | Questions the library cannot support get an explicit **NOT ENOUGH EVIDENCE** result. |
 | **Retrieval-only by default** | Output is clearly labelled as retrieved passages, never presented as a generated answer. |
 | **Optional local answer generation** | With [Ollama](https://ollama.com), a local model can write an answer. The answer is accepted only if every citation refers to a passage that was actually retrieved. |
-| **Tested and evaluated** | 97 automated tests (no network access required) and a 25-question retrieval evaluation with published results, including failures. |
+| **Local web interface** | Discover, Collection and Ask screens with live ingestion progress, filters, removal, dark/light themes, and a phone layout. Served only to your own computer. |
+| **Background ingestion** | Papers are downloaded and indexed one at a time in the background with real download progress; ingestion interrupted by closing the app is marked for retry on restart. |
+| **Tested and evaluated** | 139 automated tests, including 10 browser end-to-end tests of every screen (no network access required), and a 25-question retrieval evaluation with published results, including failures. |
 
 ---
 
@@ -59,6 +66,10 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-dev.txt
 
+# Web interface: opens http://127.0.0.1:8000 in your browser
+python app.py serve
+
+# ...or the command line
 python app.py search "retrieval augmented generation" --max 5
 python app.py add 2005.11401
 python app.py ask "Which Wikipedia dump is used as the knowledge source?"
@@ -75,7 +86,8 @@ python app.py ask "Which Wikipedia dump is used as the knowledge source?"
 | Windows | 10 or 11 | The commands below use PowerShell. The code itself is platform-independent. |
 | Python | 3.11 | Check with `py -3.11 --version`. |
 | Git | any recent | Needed to clone the repository. |
-| Internet access | — | Needed only for `search` and `add`. `ask` works offline. |
+| Internet access | — | Needed only for searching and adding papers. Asking works offline. |
+| A web browser | any modern | For the web interface (Chrome, Edge, Firefox). |
 
 ### 3.2 Set up a virtual environment
 
@@ -103,24 +115,70 @@ python -m pip install -r requirements.txt
 |---|---|---|
 | `requests` | HTTP requests to arXiv and (optionally) Ollama | 2.34.2 |
 | `pypdf` | PDF text extraction | 6.19.0 |
+| `fastapi` | Local web server and JSON API | 0.141.1 |
+| `uvicorn` | Runs the web server | 0.54.0 |
 | `pytest` | Test runner (development only) | 9.1.1 |
+| `httpx2` | HTTP client used by the API tests (development only) | 2.13.1 |
+| `playwright` | Browser end-to-end tests (development only) | 1.63.0 |
 
 ### 3.4 Verify the installation
 
 ```powershell
+python -m playwright install chromium   # one-time: test browser for the UI tests (~150 MB)
 python -m pytest -q
 ```
 
-Expected output: `97 passed`.
+Expected output: `139 passed`. Without the test browser, the 10 browser tests are skipped.
 
 ---
 
-## 4. Usage
+## 4. Web interface
 
-All functionality is available through `app.py`. Run `python app.py --help` or
+```powershell
+python app.py serve                  # opens http://127.0.0.1:8000
+python app.py serve --port 8080      # use another port
+python app.py serve --no-browser     # don't open a browser window
+```
+
+The server listens on `127.0.0.1` only, so no other computer can connect. Stop it with `Ctrl+C`.
+Everything the screens show comes from the real backend; nothing is simulated.
+
+### 4.1 Screens and flows
+
+| Screen | What you can do |
+|---|---|
+| **Discover** (step 1) | Search arXiv (relevance or newest); read title, authors, date, category and abstract (**Show full abstract**); select papers with checkboxes or **Select all not in collection**; add them from the selection bar or per card; **Load more results**. Papers already added show their collection status. |
+| **Collection** (step 2) | See totals (papers, indexed, abstract only, searchable chunks); filter by text or by status (*All, Indexed, In progress, Needs attention, Metadata only*); watch live ingestion (**Queued → Downloading n% → Processing → Indexed**); retry failed or abstract-only papers; **Ask about this paper**; **Remove** with a confirmation dialog. |
+| **Ask** (step 3) | Ask a question (`Ctrl+Enter`), optionally scoped to one paper; re-run recent questions; read the result in one of three labelled modes (below). |
+| **Sidebar** | Live status of arXiv, the search index, and the answer model; collection and indexed counts; dark/light theme. On phones this becomes a bottom navigation bar. |
+
+| Ask result | When | What you see |
+|---|---|---|
+| **Grounded answer** | A local model is installed and every citation is valid | The answer with clickable citation badges, and sources under *Cited* / *All retrieved* tabs |
+| **Retrieved passages only** | No model, generation switched off, or the model's answer was rejected | The best passages quoted from your papers, the reason no answer was written, and the key words searched (missing ones dashed) |
+| **Not enough information** | The collection doesn't support an answer | The reason, suggestions (including a one-click arXiv search for the key words), and the nearest passages hidden behind **Show nearest passages anyway** |
+
+Every passage shows its paper, arXiv ID and version, page number (or "abstract only"), matched
+key words, and a link that opens the PDF at that page.
+
+### 4.2 Screenshots
+
+Taken from the running app with real arXiv data on 2026-09-28.
+
+| Discover | Collection (ingesting) |
+|---|---|
+| ![Discover screen](docs/screenshots/discover.png) | ![Collection screen](docs/screenshots/collection.png) |
+| **Ask: not enough information** | **Phone layout** |
+| ![Not enough information](docs/screenshots/ask-not-enough.png) | ![Phone layout](docs/screenshots/mobile.png) |
+
+---
+
+## 5. Command-line usage
+
+All functionality is also available through `app.py`. Run `python app.py --help` or
 `python app.py <command> --help` for built-in help.
 
-### 4.1 Typical workflow
+### 5.1 Typical workflow
 
 ```mermaid
 flowchart LR
@@ -130,7 +188,7 @@ flowchart LR
     D -.->|"new topic"| A
 ```
 
-### 4.2 Command reference
+### 5.2 Command reference
 
 #### `search`: find papers on arXiv
 
@@ -147,8 +205,9 @@ python app.py search "<query>" [--max N] [--start N] [--sort relevance|recent] [
 | `--full` | off | Show complete abstracts instead of a 300-character preview |
 
 Every result shows its title, ID, authors, publication and update dates, category, journal
-reference (when available), link, and abstract. Metadata for all results is saved to the local
-library, and each result is marked `(new)` or `(already in library)`.
+reference (when available), link, and abstract. Metadata for all results is cached locally without
+duplicates, but a paper joins **your collection** only when you add it; results already in your
+collection are marked `(in your collection)`.
 
 #### `add`: select and ingest papers
 
@@ -173,15 +232,28 @@ of the following outcomes:
 | `INVALID ID` | The input is not a recognisable arXiv ID |
 | `FAILED` | Metadata lookup or file saving failed (reason shown) |
 
-#### `list`: review the library
+#### `list`: review your collection
 
 ```powershell
 python app.py list
 ```
 
-Shows every saved paper with its ingest status, page count, and passage count. It also shows the
-reason for any `abstract_only` paper, whether a newer arXiv version is available, and when the
-last search happened.
+Shows every paper in your collection with its ingest status, page count, and passage count. It also
+shows the reason for any `abstract_only` or `failed` paper, whether a newer arXiv version is
+available, how many search results are cached outside the collection, and when the last search happened.
+
+#### `remove`: delete a paper from this computer
+
+```powershell
+python app.py remove <id> [--yes]
+```
+
+Deletes the paper's metadata, indexed passages, and downloaded PDFs after asking for confirmation
+(`--yes` skips the question). The paper stays on arXiv and can be added again.
+
+#### `serve`: start the web interface
+
+See [section 4](#4-web-interface).
 
 #### `ask`: query the library
 
@@ -194,7 +266,7 @@ python app.py ask "<question>" [--top N] [--paper ID] [--generate] [--model NAME
 | `question` | *(required)* | A natural-language question |
 | `--top` | 5 | Number of passages to retrieve (1–20) |
 | `--paper` | all papers | Restrict the search to one arXiv ID |
-| `--generate` | off | Ask a local Ollama model to write a cited answer ([section 10](#10-optional-generated-answers-with-a-local-model)) |
+| `--generate` | off | Ask a local Ollama model to write a cited answer ([section 12](#12-optional-generated-answers-with-a-local-model)) |
 | `--model` | `llama3.2:3b` | Ollama model used with `--generate` |
 
 Every result is presented in exactly one of three clearly labelled modes:
@@ -205,7 +277,7 @@ Every result is presented in exactly one of three clearly labelled modes:
 | **GENERATED ANSWER** | `--generate` and the model's citations are valid | The model's answer, the list of cited passages, and all retrieved passages for verification |
 | **NOT ENOUGH EVIDENCE** | The library does not support an answer | The reason, plus any weak matches for transparency |
 
-### 4.3 Exit codes
+### 5.3 Exit codes
 
 | Code | Meaning |
 |---|---|
@@ -215,22 +287,22 @@ Every result is presented in exactly one of three clearly labelled modes:
 
 ---
 
-## 5. Example session
+## 6. Example session
 
-Real output recorded on 2026-09-28 (shortened where marked `...`).
+Real command-line output recorded on 2026-09-28 (shortened where marked `...`).
 
 ```text
 PS> python app.py search "retrieval augmented generation" --max 3
 Showing results 1-3 of about 8,516 for: retrieval augmented generation
 
 [1] AR-RAG: Autoregressive Retrieval Augmentation for Image Generation
-    ID: 2506.06962v3   (new)
+    ID: 2506.06962v3
     Authors: Jingyuan Qi, Zhiyang Xu, Qifan Wang et al. (4 authors)
     Published: 2025-06-08   Updated: 2025-06-14   Category: cs.CV
     Link: https://arxiv.org/abs/2506.06962v3
     We introduce Autoregressive Retrieval Augmentation (AR-RAG), a novel paradigm ...
 ...
-Saved metadata: 3 new, 0 already in your library.
+Cached metadata: 3 new, 0 seen before (no duplicates).
 
 PS> python app.py add 1706.03762 1810.04805 2005.11401 not-an-id
 INVALID ID       not-an-id
@@ -270,9 +342,30 @@ are all reused from disk.
 
 ---
 
-## 6. System architecture
+## 7. System architecture
 
-### 6.1 Pipeline overview
+### 7.1 How the pieces fit
+
+```mermaid
+flowchart LR
+    B["Browser<br/>index.html · app.js · styles.css"] -- "JSON over HTTP<br/>127.0.0.1 only" --> S["FastAPI server<br/>docqa/server.py"]
+    C["Command line<br/>docqa/cli.py"] --> W
+    S --> W["Workflow functions<br/>docqa/workflow.py"]
+    S --> Q["Background worker<br/>docqa/worker.py"]
+    Q --> W
+    W --> A[arxiv_client]
+    W --> I[ingest]
+    W --> R[retrieval / answer]
+    A --> D[("SQLite<br/>data/library.db")]
+    I --> D
+    R --> D
+```
+
+The web server and the command line call the **same** workflow functions, so both behave
+identically. The server shares one arXiv client between searches and downloads, so the
+3-second spacing applies across everything it does.
+
+### 7.2 Pipeline overview
 
 ```mermaid
 flowchart TD
@@ -306,7 +399,7 @@ flowchart TD
     end
 ```
 
-### 6.2 Components
+### 7.3 Components
 
 The code is organised into small single-purpose modules inside the `docqa/` package. Printing
 is kept separate from the logic, so every module can be tested on its own.
@@ -314,8 +407,11 @@ is kept separate from the logic, so every module can be tested on its own.
 | Module | Responsibility |
 |---|---|
 | [`app.py`](app.py) | Entry point; delegates to the command-line interface |
-| [`docqa/cli.py`](docqa/cli.py) | Command parsing and output formatting |
-| [`docqa/workflow.py`](docqa/workflow.py) | High-level actions: *search and save*, *add papers* |
+| [`docqa/cli.py`](docqa/cli.py) | Command parsing and output formatting; `serve` starts the web server |
+| [`docqa/server.py`](docqa/server.py) | FastAPI app: JSON API endpoints and the web page |
+| [`docqa/worker.py`](docqa/worker.py) | Background thread that ingests queued papers one at a time |
+| [`docqa/web/`](docqa/web/) | The web interface: `index.html`, `styles.css`, `app.js` (plain JavaScript, no build step) |
+| [`docqa/workflow.py`](docqa/workflow.py) | High-level actions: *search and save*, *select*, *ingest*, *remove* |
 | [`docqa/arxiv_client.py`](docqa/arxiv_client.py) | Query construction, polite HTTP access (spacing, timeouts, retries), Atom XML parsing, ID normalisation |
 | [`docqa/storage.py`](docqa/storage.py) | SQLite schema and all database reads and writes |
 | [`docqa/pdf_text.py`](docqa/pdf_text.py) | PDF validation, per-page text extraction, text cleaning |
@@ -326,7 +422,7 @@ is kept separate from the logic, so every module can be tested on its own.
 | [`docqa/local_llm.py`](docqa/local_llm.py) | Optional client for a local Ollama server |
 | [`docqa/config.py`](docqa/config.py) | Locations of local data files |
 
-### 6.3 Reliability guarantees
+### 7.4 Reliability guarantees
 
 | Scenario | Behaviour |
 |---|---|
@@ -336,10 +432,31 @@ is kept separate from the logic, so every module can be tested on its own.
 | The same paper added twice | Reported as `ALREADY INDEXED`; no duplicate passages are created. |
 | Interrupted download | PDFs are written to a temporary file and renamed only when complete. |
 | Special characters in questions | Key words are quoted before searching, so text such as `"`, `(` or `AND` cannot break the search syntax. |
+| App closed during ingestion | On the next start, papers left mid-ingestion are marked `failed` ("interrupted") and can be retried. |
+| Removing a paper that is being ingested | Refused until ingestion finishes, so files are never deleted mid-download. |
+| Text from papers shown in the browser | Always HTML-escaped before display. |
 
 ---
 
-## 7. Design decisions
+## 8. HTTP API
+
+The web interface uses these endpoints; they can also be called directly. Interactive
+documentation is generated automatically at <http://127.0.0.1:8000/docs> while the server runs.
+
+| Method and path | Purpose | Notes |
+|---|---|---|
+| `GET /api/status` | Collection counts, arXiv status, index size, answer-model availability | Model availability is re-checked at most every 10 s |
+| `GET /api/search?q=&sort=&start=&max=` | Search arXiv and cache the results | `sort` is `relevance` or `recent`; `max` is 1–50; `502` if arXiv fails |
+| `POST /api/collection` `{"ids": [...]}` | Add papers to the collection and queue them for ingestion | Returns `queued`, `already_in_collection`, and `problems` (invalid / not found) |
+| `GET /api/papers` | The collection with live statuses, progress, and counts | Polled by the page while ingestion runs |
+| `GET /api/papers/{id}` | One paper | `404` if unknown |
+| `POST /api/papers/{id}/ingest` `{"force": false}` | Download & index, retry, or re-index a newer version | `409` while already ingesting |
+| `DELETE /api/papers/{id}` | Remove metadata, passages, and PDFs | `409` while ingesting |
+| `POST /api/ask` `{"question", "paper_id", "top_k", "generate"}` | Retrieve passages and, optionally, a checked generated answer | `409` if nothing is indexed yet |
+
+---
+
+## 9. Design decisions
 
 | Decision | Rationale | Trade-off |
 |---|---|---|
@@ -347,15 +464,18 @@ is kept separate from the logic, so every module can be tested on its own.
 | **Keyword search (BM25 via SQLite FTS5) instead of vector embeddings** | Nothing extra to install, fast, and stored in the same file. Fully explainable: the output shows which question words each passage matched. Porter stemming matches word variants ("transformers" → "transformer"). | Cannot match synonyms or paraphrases. Embeddings would add a ~1 GB PyTorch dependency and are a candidate for future work if evaluation shows the need. |
 | **Passages never cross page boundaries** | Guarantees that every citation refers to exactly one page. | A sentence spanning two pages is split. |
 | **150-word passages with 30-word overlap** | Small enough to cite precisely, large enough to carry context. The overlap keeps sentences cut at a boundary intact in the neighbouring passage. | Fixed-size windows ignore section structure. |
-| **Word-coverage evidence rule** | Simple, transparent, and requires no model: the best passage must contain ≥ 60% of the question's key words. | Counts words rather than understanding meaning (see [section 12](#12-evaluation)). |
+| **Word-coverage evidence rule** | Simple, transparent, and requires no model: the best passage must contain ≥ 60% of the question's key words. | Counts words rather than understanding meaning (see [section 14](#14-evaluation)). |
 | **Retrieval separated from generation** | The system is fully usable without any language model, and retrieval can be evaluated on its own. | Default output requires the user to read passages. |
 | **Strict citation validation for generated answers** | A generated answer is rejected if it cites nothing or cites a passage number that was never retrieved. This prevents fabricated references. | Confirms that citations exist, but cannot prove that each sentence is supported. |
 | **Responsible arXiv access** | Follows the [arXiv API user manual](https://info.arxiv.org/help/api/user-manual.html): at most one request every 3 seconds, a descriptive User-Agent, and pagination via `start`/`max_results`. Retries use growing waits (3 s, 6 s, 12 s) and honour `Retry-After`. | Ingesting many papers is deliberately slow. |
 | **HTTP 406 treated as retryable** | During development, arXiv intermittently answered valid requests with HTTP 406. | None observed. |
+| **FastAPI + plain JavaScript for the UI** | FastAPI validates inputs and documents the API automatically; plain HTML/CSS/JS needs no Node.js or build step and works offline. | More hand-written page code than a framework would need. |
+| **One background worker thread** | Keeps the page responsive and respects arXiv's one-request-at-a-time guidance. | Papers are ingested one after another, not in parallel. |
+| **Search results are cached, not added** | Browsing never clutters the collection; only papers you add are ingested and searched. | Cached search metadata stays in the database until `data/` is deleted. |
 
 ---
 
-## 8. Data storage
+## 10. Data storage
 
 All runtime data is written to the `data/` directory, which is excluded from Git by `.gitignore`.
 
@@ -365,35 +485,40 @@ All runtime data is written to the `data/` directory, which is excluded from Git
 | `data/pdfs/` | Downloaded PDFs, named `<arxiv-id><version>.pdf` (e.g. `1706.03762v7.pdf`). They are reused rather than downloaded again. |
 | `data/eval/` | A separate library used only by the evaluation script |
 
-### 8.1 Database schema
+### 10.1 Database schema
 
 | Table | Purpose | Key columns |
 |---|---|---|
-| `papers` | One row per paper (primary key: `arxiv_id`) | title, authors, abstract, dates, links, categories, journal ref, DOI, `ingest_status`, `ingest_note`, `ingested_version`, `page_count` |
+| `papers` | One row per paper seen in a search or added (primary key: `arxiv_id`) | title, authors, abstract, dates, links, categories, journal ref, DOI, `in_collection`, `ingest_status`, `ingest_note`, `progress`, `ingested_version`, `page_count` |
 | `chunks` | One row per passage | `chunk_id` (e.g. `1706.03762:p5:c15`), `arxiv_id`, `page`, `source` (`pdf` / `abstract`), `text` |
 | `chunks_fts` | FTS5 full-text index over passage text | `chunk_id`, `text` (Porter-stemmed) |
 | `meta` | Small key/value facts | e.g. time of the last arXiv search |
 
-### 8.2 Ingest statuses
+### 10.2 Ingest statuses
 
-| Status | Meaning |
-|---|---|
-| `not_ingested` | Metadata saved from a search; not yet selected |
-| `full_text` | PDF text extracted and indexed, with page numbers |
-| `abstract_only` | Only the abstract is indexed; `ingest_note` records why |
+| Status | Shown as | Meaning |
+|---|---|---|
+| `not_ingested` | Metadata only | Metadata saved; no text indexed yet |
+| `queued` | Queued | Waiting for the background worker |
+| `downloading` | Downloading n% | The PDF is being fetched; `progress` holds the percentage |
+| `processing` | Processing | Text is being extracted, chunked, and indexed |
+| `full_text` | Indexed | PDF text extracted and indexed, with page numbers |
+| `abstract_only` | Indexed · abstract only | Only the abstract is indexed; `ingest_note` records why |
+| `failed` | Failed | Ingestion stopped (for example a disk error, or the app closed mid-way); `ingest_note` says why |
 
-To reset the library, delete the `data/` directory.
+Library files created by earlier versions are upgraded automatically the first time they are
+opened. To reset the library, delete the `data/` directory.
 
 ---
 
-## 9. Configuration
+## 11. Configuration
 
 Behaviour can be adjusted with environment variables. None are required.
 
 | Variable | Default | Effect |
 |---|---|---|
 | `DOCQA_DATA_DIR` | `<project>/data` | Location of the database and PDFs |
-| `DOCQA_OLLAMA_MODEL` | `llama3.2:3b` | Default model for `--generate` |
+| `DOCQA_OLLAMA_MODEL` | `llama3.2:3b` | Model used by `--generate` and the web interface |
 | `OLLAMA_HOST` | `http://localhost:11434` | Address of the Ollama server |
 
 Example (current PowerShell session only):
@@ -404,15 +529,17 @@ $env:DOCQA_DATA_DIR = "D:\research-library"
 
 ---
 
-## 10. Optional: generated answers with a local model
+## 12. Optional: generated answers with a local model
 
 > **Status:** the prompt construction, citation validation, and error handling are implemented and
-> covered by automated tests using a simulated model. The feature has **not yet been verified
-> against a real Ollama model**.
+> covered by automated tests (API and browser) using a stand-in model. The feature has **not yet
+> been verified against a real Ollama model**.
 
 1. Install Ollama (free) from <https://ollama.com>.
 2. Download a model (about 2 GB): `ollama pull llama3.2:3b`
-3. Ask with generation enabled:
+3. In the web interface, the sidebar shows **Answer model: llama3.2:3b via Ollama** once it is
+   detected, and answers are written automatically (untick *Write an answer with…* to turn this
+   off). On the command line, add `--generate`:
    ```powershell
    python app.py ask "How many attention heads does the Transformer use?" --generate
    ```
@@ -430,32 +557,36 @@ $env:DOCQA_DATA_DIR = "D:\research-library"
 
 ---
 
-## 11. Testing
+## 13. Testing
 
 ```powershell
-python -m pytest            # full suite
-python -m pytest -q         # compact output
-python -m pytest tests/test_retrieval.py -v   # one module, verbose
+python -m playwright install chromium          # one-time, for the browser tests
+python -m pytest                               # full suite
+python -m pytest -q                            # compact output
+python -m pytest tests/test_ui_e2e.py -v       # browser end-to-end tests only
 ```
 
-The suite contains **97 tests** and requires no network access. HTTP calls are replaced by fakes,
+The suite contains **139 tests** and requires no network access. HTTP calls are replaced by fakes,
 and test PDFs are generated in memory. arXiv parsing is tested against real arXiv responses saved
-in `tests/fixtures/`.
+in `tests/fixtures/`. The API and browser tests run the real server, database, and background
+worker; only arXiv and the answer model are stand-ins. The browser tests fail on any JavaScript error.
 
 | Test module | Coverage |
 |---|---|
 | `test_arxiv_client.py` | Metadata parsing, arXiv error responses, malformed XML, query building, ID normalisation, request spacing, retries, timeouts, `Retry-After` |
 | `test_storage.py` | Duplicate prevention, metadata updates, persistence across restarts, preservation of saved data when a search fails |
 | `test_chunking_and_pdf.py` | Page-by-page extraction, text cleaning, chunk overlap, page tracking, broken or non-PDF files |
-| `test_ingest.py` | Full-text ingestion, abstract-only fallbacks (download failure, image-only PDF, HTML instead of PDF), re-ingestion without duplicates, version upgrades, per-ID outcomes |
+| `test_ingest.py` | Full-text ingestion, abstract-only fallbacks (download failure, image-only PDF, HTML instead of PDF), re-ingestion without duplicates, version upgrades, per-ID outcomes, progress and failure statuses, removal, interrupted ingestion |
 | `test_retrieval.py` | Ranking, stemming, citation labels and links, insufficient evidence, search-syntax injection, per-paper filtering, index persistence |
 | `test_answer.py` | Output-mode labelling, citation validation, rejection of invalid citations, model refusal, fallback when the model is unavailable, Ollama client errors |
+| `test_server.py` | Every API endpoint: status, search (including arXiv failure and invalid input), add, background ingestion, abstract-only fallback, retry, remove, restart recovery, and all three ask modes |
+| `test_ui_e2e.py` | Browser tests (Playwright): empty states; search → select → add → live statuses; search error and retry; no results; filters; retry full text; ask about this paper; remove dialog; download progress; passages-only, not-enough and grounded answers with citation links; theme persistence; phone layout |
 
 ---
 
-## 12. Evaluation
+## 14. Evaluation
 
-### 12.1 Method
+### 14.1 Method
 
 [`evaluation/questions.json`](evaluation/questions.json) contains **25 questions** about three
 papers: *Attention Is All You Need* (1706.03762), *BERT* (1810.04805), and *Retrieval-Augmented
@@ -475,7 +606,7 @@ python -m evaluation.run_eval --setup   # first run: downloads and ingests the 3
 python -m evaluation.run_eval           # re-run and regenerate evaluation/results.md
 ```
 
-### 12.2 Results (2026-09-28)
+### 14.2 Results (2026-09-28)
 
 | Metric | Result |
 |---|---|
@@ -488,7 +619,7 @@ python -m evaluation.run_eval           # re-run and regenerate evaluation/resul
 The per-question breakdown is in [`evaluation/results.md`](evaluation/results.md). Answer
 generation is not included in this evaluation.
 
-### 12.3 Failure analysis
+### 14.3 Failure analysis
 
 | ID | Failure | Cause |
 |---|---|---|
@@ -504,22 +635,22 @@ figures are indicative rather than a statistically robust benchmark.
 
 ---
 
-## 13. Limitations
+## 15. Limitations
 
 | Area | Limitation |
 |---|---|
 | Retrieval | Keyword matching misses synonyms and paraphrases. |
-| Evidence check | Counts matching words rather than understanding meaning, so it can accept related but unanswered questions (U3, U4 above). |
+| Evidence check | Counts matching words rather than understanding meaning, so it can accept related but unanswered questions (U3, U4 above). The same happened in the live web-interface test: "Which GPU cluster was used to train GPT-4?" matched "gpu", "train" and "4" in the DPR and RAG papers, so passages were shown (labelled as passages, not an answer). |
 | PDF extraction | Tables, equations, and figure contents are lost or garbled. Two-column layouts may interleave lines. Rejoining line-break hyphens can merge genuine hyphenated terms (e.g. "RAG-Sequence" → "RAGSequence"). |
 | Abstract-only papers | Can answer only what the abstract states; they are labelled as such everywhere. |
-| Rate limiting | The 3-second spacing is enforced within one command, not between separate commands run in quick succession. |
-| Paper versions | If arXiv publishes a newer version, `list` reports it, but re-indexing requires `add <id> --force`. |
+| Rate limiting | The 3-second spacing is enforced within one process (one command, or the whole web server), not between separate commands run in quick succession. |
+| Paper versions | If arXiv publishes a newer version, `list` and the Collection screen report it; re-indexing is one click (or `add <id> --force`). |
 | Generation | Not yet verified with a real model. Citation checks confirm that references exist, not that every claim is supported. |
-| Interface | Command line only; there is no graphical dashboard. |
+| Web interface | Single-user and local only (no login). Papers are ingested one at a time. |
 
 ---
 
-## 14. Troubleshooting
+## 16. Troubleshooting
 
 | Symptom | Resolution |
 |---|---|
@@ -530,10 +661,14 @@ figures are indicative rather than a statistically robust benchmark.
 | `Ollama is not running at http://localhost:11434` | Start the Ollama application, or omit `--generate`. |
 | `the model '…' is not installed` | Run `ollama pull <model>`. |
 | Odd characters such as `�` in output | Some Unicode characters (e.g. curly quotes) cannot be shown when output is redirected. The stored text is unaffected. |
+| `serve` fails with "address already in use" | Another program uses port 8000. Run `python app.py serve --port 8080`. |
+| The web page says "Could not reach the local server" | The `serve` window was closed or stopped. Start it again; your library is unaffected. |
+| A paper shows **Failed** with "interrupted" | The server stopped while it was ingesting. Click **Retry ingestion**. |
+| Browser tests are skipped | Run `python -m playwright install chromium` once. |
 
 ---
 
-## 15. Project structure
+## 17. Project structure
 
 ```
 local-document-qa/
@@ -548,6 +683,9 @@ local-document-qa/
 │   ├── answer.py
 │   ├── local_llm.py
 │   ├── workflow.py
+│   ├── worker.py             # Background ingestion thread
+│   ├── server.py             # FastAPI server (JSON API + web page)
+│   ├── web/                  # index.html, styles.css, app.js
 │   ├── cli.py
 │   └── config.py
 ├── evaluation/
@@ -560,7 +698,8 @@ local-document-qa/
 │   ├── conftest.py           # Shared fakes and fixtures
 │   └── test_*.py
 ├── docs/
-│   └── design.md             # Design document (original plan + revision 2)
+│   ├── design.md             # Design document (original plan + revisions)
+│   └── screenshots/          # Screenshots of the web interface
 ├── requirements.txt          # Runtime dependencies
 ├── requirements-dev.txt      # Runtime + test dependencies
 ├── pytest.ini
@@ -569,9 +708,11 @@ local-document-qa/
 
 ---
 
-## 16. Project history
+## 18. Project history
 
 The project began as **AI Research Radar**, a metadata-only browser for recent arXiv papers. The
 original plan listed cited question-answering as a later addition. Revision 2 of the design made
 that the primary goal and added full-text ingestion, page-level provenance, and evidence-aware
-answering. Both versions are recorded in [`docs/design.md`](docs/design.md).
+answering. Revision 3 added the local web interface (Discover, Collection, Ask) over the same
+engine, in place of the planned dashboard. The design history is recorded in
+[`docs/design.md`](docs/design.md).

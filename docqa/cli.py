@@ -11,8 +11,8 @@ from .arxiv_client import ArxivClient, ArxivError, normalize_arxiv_id
 from .ingest import ALREADY_INGESTED
 from .local_llm import DEFAULT_MODEL, OllamaGenerator
 from .retrieval import DEFAULT_TOP_K
-from .storage import ABSTRACT_ONLY, FULL_TEXT, Library, StoredPaper
-from .workflow import FAILED, INVALID_ID, LAST_SEARCH_KEY, NOT_FOUND, add_papers, search_and_save
+from .storage import ABSTRACT_ONLY, FAILED, FULL_TEXT, Library, StoredPaper
+from .workflow import INVALID_ID, LAST_SEARCH_KEY, NOT_FOUND, add_papers, remove_paper, search_and_save
 
 WIDTH = 100
 STATUS_LABELS = {
@@ -35,6 +35,8 @@ def main(argv: list[str] | None = None) -> int:
     if not getattr(args, "command", None):
         build_parser().print_help()
         return 0
+    if args.command == "serve":
+        return cmd_serve(args)
     with Library(config.database_path()) as library:
         try:
             return args.handler(args, library)
@@ -71,8 +73,17 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--model", default=DEFAULT_MODEL, help=f"Ollama model for --generate (default {DEFAULT_MODEL})")
     ask.set_defaults(handler=cmd_ask)
 
-    list_cmd = commands.add_parser("list", help="show the papers saved in your library")
+    list_cmd = commands.add_parser("list", help="show the papers in your collection")
     list_cmd.set_defaults(handler=cmd_list)
+
+    remove = commands.add_parser("remove", help="delete a paper's metadata, PDF and indexed text from this computer")
+    remove.add_argument("id", help="arXiv ID of the paper to remove")
+    remove.add_argument("--yes", action="store_true", help="don't ask for confirmation")
+    remove.set_defaults(handler=cmd_remove)
+
+    serve = commands.add_parser("serve", help="start the web interface at http://127.0.0.1:8000")
+    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--no-browser", action="store_true", help="don't open a browser window")
     return parser
 
 
@@ -85,9 +96,10 @@ def cmd_search(args, library: Library) -> int:
     total = f"of about {page.total_results:,} " if page.total_results is not None else ""
     print(f"Showing results {page.start + 1}-{page.start + len(page.papers)} {total}for: {args.query}\n")
     for number, paper in enumerate(page.papers, start=page.start + 1):
-        is_new = paper.arxiv_id in outcome.saved.new
+        stored = library.get_paper(paper.arxiv_id)
+        marker = "(in your collection)" if stored is not None and stored.in_collection else ""
         print(f"[{number}] {paper.title}")
-        print(f"    ID: {paper.arxiv_id}{paper.version}   {'(new)' if is_new else '(already in library)'}")
+        print(f"    ID: {paper.arxiv_id}{paper.version}   {marker}")
         print(f"    Authors: {format_authors(paper.authors)}")
         print(f"    Published: {paper.published[:10]}   Updated: {paper.updated[:10]}   Category: {paper.primary_category}")
         if paper.journal_ref:
@@ -98,8 +110,8 @@ def cmd_search(args, library: Library) -> int:
         print()
     if page.skipped_entries:
         print(f"Note: {page.skipped_entries} result(s) were malformed and skipped.")
-    print(f"Saved metadata: {len(outcome.saved.new)} new, {len(outcome.saved.already_saved)} already in your library.")
-    print("Next: `python app.py add <ID>` to ingest a paper for question answering.")
+    print(f"Cached metadata: {len(outcome.saved.new)} new, {len(outcome.saved.already_saved)} seen before (no duplicates).")
+    print("Next: `python app.py add <ID>` to add a paper to your collection and ingest it.")
     return 0
 
 
@@ -166,21 +178,58 @@ def format_answer(answer: Answer) -> str:
 
 
 def cmd_list(args, library: Library) -> int:
-    papers = library.list_papers()
+    papers = library.list_papers(collection_only=True)
+    stats = library.stats()
     if not papers:
-        print("Your library is empty. Start with: python app.py search \"your topic\"")
+        print("Your collection is empty. Start with: python app.py search \"your topic\"")
         return 0
-    print(f"{len(papers)} paper(s) in {config.database_path()}")
-    print(f"{library.chunk_count()} searchable passage(s) in the index\n")
+    print(f"{len(papers)} paper(s) in your collection ({config.database_path()})")
+    print(f"{stats['chunks']} searchable passage(s) in the index\n")
     print(f"{'ID':<14} {'STATUS':<13} {'PAGES':>5} {'CHUNKS':>6}  TITLE")
     for stored in papers:
         print(format_library_line(stored, library.chunk_count(stored.paper.arxiv_id)))
-        if stored.ingest_status == ABSTRACT_ONLY:
+        if stored.ingest_status in (ABSTRACT_ONLY, FAILED):
             print(f"{'':<14} reason: {stored.ingest_note}")
         elif stored.ingested_version and stored.ingested_version != stored.paper.version:
             print(f"{'':<14} note: {stored.ingested_version} is indexed; {stored.paper.version} is newer "
                   f"(run `python app.py add {stored.paper.arxiv_id} --force` to update)")
-    print(f"\nLast arXiv search: {library.get_meta(LAST_SEARCH_KEY) or 'never'}")
+    if stats["cached_search_results"]:
+        print(f"\n({stats['cached_search_results']} more paper(s) are cached from searches but not in your collection.)")
+    print(f"Last arXiv search: {library.get_meta(LAST_SEARCH_KEY) or 'never'}")
+    return 0
+
+
+def cmd_remove(args, library: Library) -> int:
+    arxiv_id = normalize_arxiv_id(args.id)
+    stored = library.get_paper(arxiv_id)
+    if stored is None:
+        print(f"{arxiv_id} is not in your library.")
+        return 1
+    chunks = library.chunk_count(arxiv_id)
+    if not args.yes:
+        answer = input(f'Remove "{stored.paper.title}" and its PDF and {chunks} indexed chunk(s)? [y/N] ')
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Nothing was removed.")
+            return 0
+    removal = remove_paper(library, arxiv_id, config.pdf_dir())
+    print(f"Removed {removal.arxiv_id}: {removal.chunks_deleted} chunk(s), {removal.pdfs_deleted} PDF file(s).")
+    return 0
+
+
+def cmd_serve(args) -> int:
+    import threading
+    import webbrowser
+
+    import uvicorn
+
+    from .server import create_app
+
+    url = f"http://127.0.0.1:{args.port}"
+    print(f"Local Document Q&A is running at {url}  (press Ctrl+C to stop)")
+    if not args.no_browser:
+        threading.Timer(1.5, webbrowser.open, args=(url,)).start()
+    # 127.0.0.1 = only this computer can connect.
+    uvicorn.run(create_app(), host="127.0.0.1", port=args.port, log_level="warning")
     return 0
 
 

@@ -66,3 +66,30 @@ def test_failed_refresh_does_not_remove_saved_papers(library):
 
     assert len(library.list_papers()) == 2
     assert library.get_meta(LAST_SEARCH_KEY) == "earlier"
+
+
+def test_old_database_is_migrated(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "old.db"
+    with Library(db) as lib:
+        lib.save_papers(PAPERS)
+    # Simulate a library file from before the collection flag existed.
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE papers SET ingest_status = 'full_text' WHERE arxiv_id = '2209.15001'")
+    conn.execute("ALTER TABLE papers DROP COLUMN in_collection")
+    conn.execute("ALTER TABLE papers DROP COLUMN progress")
+    conn.commit()
+    conn.close()
+
+    with Library(db) as lib:
+        assert lib.get_paper("2209.15001").in_collection  # it had been ingested, so it was "added"
+        assert not lib.get_paper("2605.26355").in_collection  # only seen in a search
+        assert [s.paper.arxiv_id for s in lib.list_papers(collection_only=True)] == ["2209.15001"]
+
+
+def test_stats_count_only_the_collection(library):
+    library.save_papers(PAPERS)
+    library.add_to_collection(["2209.15001"])
+    stats = library.stats()
+    assert stats["papers"] == 1 and stats["metadata_only"] == 1 and stats["cached_search_results"] == 1
