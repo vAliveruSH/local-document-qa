@@ -7,10 +7,19 @@ import textwrap
 
 from . import config
 from .arxiv_client import ArxivClient, ArxivError
-from .storage import Library, StoredPaper
-from .workflow import LAST_SEARCH_KEY, search_and_save
+from .ingest import ALREADY_INGESTED
+from .storage import ABSTRACT_ONLY, FULL_TEXT, Library, StoredPaper
+from .workflow import FAILED, INVALID_ID, LAST_SEARCH_KEY, NOT_FOUND, add_papers, search_and_save
 
 WIDTH = 100
+STATUS_LABELS = {
+    FULL_TEXT: "FULL TEXT",
+    ABSTRACT_ONLY: "ABSTRACT ONLY",
+    ALREADY_INGESTED: "ALREADY INDEXED",
+    NOT_FOUND: "NOT FOUND",
+    INVALID_ID: "INVALID ID",
+    FAILED: "FAILED",
+}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -46,6 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--full", action="store_true", help="show whole abstracts")
     search.set_defaults(handler=cmd_search)
 
+    add = commands.add_parser("add", help="select papers by arXiv ID and ingest their text")
+    add.add_argument("ids", nargs="+", help="one or more arXiv IDs, e.g. 1706.03762")
+    add.add_argument("--force", action="store_true", help="download and re-index even if already ingested")
+    add.set_defaults(handler=cmd_add)
+
     list_cmd = commands.add_parser("list", help="show the papers saved in your library")
     list_cmd.set_defaults(handler=cmd_list)
     return parser
@@ -78,14 +92,40 @@ def cmd_search(args, library: Library) -> int:
     return 0
 
 
+def cmd_add(args, library: Library) -> int:
+    print(f"Ingesting {len(args.ids)} paper(s). PDF downloads are spaced 3 seconds apart, as arXiv requests.\n")
+    results = add_papers(ArxivClient(), library, args.ids, config.pdf_dir(), force=args.force)
+    for result in results:
+        stored = library.get_paper(result.arxiv_id)
+        title = f" {textwrap.shorten(stored.paper.title, 70, placeholder='...')}" if stored else ""
+        print(f"{STATUS_LABELS.get(result.status, result.status.upper()):<16} {result.arxiv_id}{title}")
+        detail = result.note
+        if result.chunk_count:
+            detail += f"; {result.chunk_count} searchable passage(s)"
+        print(f"{'':<16} {detail}")
+    counts = {status: sum(r.status == status for r in results) for status in STATUS_LABELS}
+    summary = ", ".join(f"{n} {STATUS_LABELS[s].lower()}" for s, n in counts.items() if n)
+    print(f"\nSummary: {summary}.")
+    if counts[ABSTRACT_ONLY]:
+        print("Abstract-only papers can still be searched, but answers about them rely on the abstract alone.")
+    return 0 if all(r.status in (FULL_TEXT, ABSTRACT_ONLY, ALREADY_INGESTED) for r in results) else 1
+
+
 def cmd_list(args, library: Library) -> int:
     papers = library.list_papers()
     if not papers:
         print("Your library is empty. Start with: python app.py search \"your topic\"")
         return 0
-    print(f"{len(papers)} paper(s) in {config.database_path()}\n")
+    print(f"{len(papers)} paper(s) in {config.database_path()}")
+    print(f"{library.chunk_count()} searchable passage(s) in the index\n")
+    print(f"{'ID':<14} {'STATUS':<13} {'PAGES':>5} {'CHUNKS':>6}  TITLE")
     for stored in papers:
-        print(format_library_line(stored))
+        print(format_library_line(stored, library.chunk_count(stored.paper.arxiv_id)))
+        if stored.ingest_status == ABSTRACT_ONLY:
+            print(f"{'':<14} reason: {stored.ingest_note}")
+        elif stored.ingested_version and stored.ingested_version != stored.paper.version:
+            print(f"{'':<14} note: {stored.ingested_version} is indexed; {stored.paper.version} is newer "
+                  f"(run `python app.py add {stored.paper.arxiv_id} --force` to update)")
     print(f"\nLast arXiv search: {library.get_meta(LAST_SEARCH_KEY) or 'never'}")
     return 0
 
@@ -97,6 +137,8 @@ def format_authors(authors: tuple[str, ...], limit: int = 3) -> str:
     return f"{shown} et al. ({len(authors)} authors)" if len(authors) > limit else shown
 
 
-def format_library_line(stored: StoredPaper) -> str:
+def format_library_line(stored: StoredPaper, chunks: int) -> str:
     paper = stored.paper
-    return f"{paper.arxiv_id:<14} {stored.ingest_status:<13} {textwrap.shorten(paper.title, 70, placeholder='...')}"
+    pages = stored.page_count if stored.page_count is not None else "-"
+    title = textwrap.shorten(paper.title, 60, placeholder="...")
+    return f"{paper.arxiv_id:<14} {stored.ingest_status:<13} {pages:>5} {chunks:>6}  {title}"

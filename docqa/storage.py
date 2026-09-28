@@ -13,8 +13,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .arxiv_client import Paper
+from .chunking import Chunk
 
+# Ingest statuses stored for each paper.
 NOT_INGESTED = "not_ingested"
+FULL_TEXT = "full_text"  # PDF text was extracted and indexed
+ABSTRACT_ONLY = "abstract_only"  # only the abstract is indexed (PDF missing or unreadable)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS papers (
@@ -44,6 +48,21 @@ CREATE TABLE IF NOT EXISTS papers (
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chunks (
+    chunk_id    TEXT PRIMARY KEY,
+    arxiv_id    TEXT NOT NULL REFERENCES papers(arxiv_id),
+    chunk_index INTEGER NOT NULL,
+    page        INTEGER,          -- 1-based PDF page; NULL for abstract text
+    source      TEXT NOT NULL,    -- 'pdf' or 'abstract'
+    text        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chunks_by_paper ON chunks(arxiv_id);
+-- Full-text search index over chunk text. 'porter' stemming lets "transformers" match "transformer".
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+    chunk_id UNINDEXED,
+    text,
+    tokenize = 'porter unicode61'
 );
 """
 
@@ -127,6 +146,51 @@ class Library:
     def list_papers(self) -> list[StoredPaper]:
         rows = self.conn.execute("SELECT * FROM papers ORDER BY first_saved_at, arxiv_id").fetchall()
         return [_row_to_stored(row) for row in rows]
+
+    def record_ingest(
+        self,
+        arxiv_id: str,
+        status: str,
+        note: str,
+        chunks: list[Chunk],
+        version: str,
+        pdf_path: str = "",
+        page_count: int | None = None,
+    ) -> None:
+        """Replace a paper's chunks (and their search-index entries) and store its ingest status.
+
+        Everything happens in one transaction: re-ingesting never leaves duplicate or
+        half-written chunks behind.
+        """
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM chunks_fts WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE arxiv_id = ?)",
+                (arxiv_id,),
+            )
+            self.conn.execute("DELETE FROM chunks WHERE arxiv_id = ?", (arxiv_id,))
+            self.conn.executemany(
+                "INSERT INTO chunks (chunk_id, arxiv_id, chunk_index, page, source, text) VALUES (?, ?, ?, ?, ?, ?)",
+                [(c.chunk_id, c.arxiv_id, c.chunk_index, c.page, c.source, c.text) for c in chunks],
+            )
+            self.conn.executemany(
+                "INSERT INTO chunks_fts (chunk_id, text) VALUES (?, ?)", [(c.chunk_id, c.text) for c in chunks]
+            )
+            self.conn.execute(
+                """UPDATE papers SET ingest_status = ?, ingest_note = ?, ingested_version = ?,
+                   pdf_path = ?, page_count = ?, ingested_at = ? WHERE arxiv_id = ?""",
+                (status, note, version, pdf_path, page_count, now_iso(), arxiv_id),
+            )
+
+    def get_chunks(self, arxiv_id: str) -> list[Chunk]:
+        rows = self.conn.execute(
+            "SELECT * FROM chunks WHERE arxiv_id = ? ORDER BY chunk_index", (arxiv_id,)
+        ).fetchall()
+        return [Chunk(r["chunk_id"], r["arxiv_id"], r["chunk_index"], r["page"], r["source"], r["text"]) for r in rows]
+
+    def chunk_count(self, arxiv_id: str | None = None) -> int:
+        if arxiv_id is None:
+            return self.conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        return self.conn.execute("SELECT COUNT(*) FROM chunks WHERE arxiv_id = ?", (arxiv_id,)).fetchone()[0]
 
     def _exists(self, arxiv_id: str) -> bool:
         return self.conn.execute("SELECT 1 FROM papers WHERE arxiv_id = ?", (arxiv_id,)).fetchone() is not None
